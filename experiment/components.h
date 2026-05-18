@@ -1,0 +1,33 @@
+#pragma once
+
+#include <remus/remus.h>
+
+// possible states 
+enum State {
+    UNSHARED,
+    SHARED,
+    DIRTY,
+    INVALID
+};
+
+// data entry -- stored (arbitrarily) on MN1
+struct DataEntry {
+    uint64_t value;                         // data value 
+};
+// directory entry -- stored (arbitrarily) on MN0
+struct DirEntry {
+    uint64_t key;                           // entry's id 
+    remus::rdma_ptr<DataEntry> ptr;         // physical addr of data 
+};
+
+// directory -- array of DirEntry instances, allocated on (arbitrarily) on MN0 
+struct Directory {
+    DirEntry entries[16]; 
+};
+
+// cache line entry (exist on remote nodes) 
+struct CacheLine {
+    State flag;             // state of the cache line
+    uint64_t home_node;     // home node id
+    uint64_t data[64];      // the cached data 
+};

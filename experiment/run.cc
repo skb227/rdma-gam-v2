@@ -71,126 +71,96 @@ int main (int argc, char **argv) {
         // create ComputeThread contexts
         std::vector<std::shared_ptr<remus::ComputeThread>> compute_threads; 
         uint64_t total_threads = (cn - c0 + 1) * args->uget(remus::CN_THREADS); 
+        std::cout << "just so that total_threads is used " << total_threads << std::endl; 
         for (uint64_t i = 0; i < args->uget(remus::CN_THREADS); ++i) {
             compute_threads.push_back(std::make_shared<remus::ComputeThread>(id, compute_node, args)); 
         }
 
-        std::cout << "build the ptrs" << std::endl; 
+        // BECAUSE THIS IS CURRENTLY SINGLE-THREADED :::
+        auto &ct = compute_threads[0];
 
-        // declare ptr for mailbox to be accessible outside assignment
-        remus::rdma_ptr<Message> mailptr; 
-        // and for the root data structure
-        remus::rdma_ptr<GAddr> rootdata; 
-        // and for a test data entry 
-        remus::rdma_ptr<DataEntry> testdata_ptr; 
+        // rdma ptr to directory -- shared
+        remus::rdma_ptr<Directory> dirptr; 
 
-        // CN 0 will construct the data structure (mailbox array) and save it in root
+        // CN 0 will construct the data structure (directory) and save it in root
         if (id == c0) {
-            std::cout << "constructing the data structure" << std::endl; 
-            // allocate mailbox -- one Message slot per node 
-            mailptr = compute_threads[0]->allocate<Message>(cn - c0 + 1); 
-            // initialize all slots in mailbox to invalid 
-            for (uint64_t n = 0; n < (cn - c0 + 1); n++) {
-                Message empty{}; 
-                empty.valid = false; 
-                auto slot = remus::rdma_ptr<Message>(
-                    mailptr.id(), mailptr.address() + n * sizeof(Message) 
-                );
-                compute_threads[0]->Write(slot, empty); 
+            // allocated directory structure on MN0 
+            dirptr = ct->allocate<Directory>(); 
+            
+            // allocate N DataEntry slots -- each with own rdma_ptr
+            const uint64_t N = 4;             // number of kv pairs for testing
+            remus::rdma_ptr<DataEntry> dataptrs[N];
+            for (uint64_t i = 0; i < N; i++) {
+                dataptrs[i] = ct->allocate<DataEntry>(); 
             }
 
-            std::cout << "allocating and initializing data entry" << std::endl; 
-            // allocate and initialize test DataEntry 
-            testdata_ptr = compute_threads[0]->allocate<DataEntry>(); 
-            DataEntry entry{}; 
-            entry.data[0] = 42;
-            entry.dir.flag = UNSHARED; 
-            entry.dir.slist_cnt = 0; 
-            entry.dir.dlist[0] = (uint64_t)-1; 
-            entry.homeNode = id;
-            compute_threads[0]->Write(testdata_ptr, entry); 
+            // write test values to each DataEntry slots 
+            for (uint64_t i = 0; i < N; i++) {
+                DataEntry d{};
+                d.value = (i + 1) * 10;         // key 0 = 10, key 1 = 20, ... 
+                ct->Write(dataptrs[i], d);
+            }
 
-            // put both into the root data structure, set as root 
-            rootdata = compute_threads[0]->allocate<GAddr>(); 
-            GAddr root{}; 
-            root.mailboxes = mailptr; 
-            root.testdata = testdata_ptr; 
-            compute_threads[0]->Write(rootdata, root); 
-            compute_threads[0]->set_root(rootdata);
+            // fill in directory 
+            Directory dir{};
+            for (uint64_t i = 0; i < N; i++) {
+                dir.entries[i].key = i; 
+                dir.entries[i].ptr = dataptrs[i];
+            }
+            ct->Write(dirptr, dir); 
+
+            // set directory as the root
+            ct->set_root(dirptr); 
         }
         
-        // declare shared ptr for cache (null)
-        std::shared_ptr<GAMcache> cache; 
-        GAddr gaddr{};
+        // barrier -- to ensure CN0 has set the root before any other node gets root 
+        ct->arrive_control_barrier(cn - c0 + 1); 
 
+        // every node gets the root directory 
+        dirptr = ct->get_root<Directory>(); 
+
+        // each node constructs the cache
+        GAMcache cache(id, dirptr); 
+
+        // test reads
+        for (uint64_t i = 0; i < 4; i++) {
+            uint64_t val = cache.read(i, ct); 
+            std::cout << "read key = " << i << " --> value = " << val << " (expected " << (i+1)*10 << ")" << std::endl; 
+        }
+
+        // test cache hit (read the same)
+        uint64_t val2 = cache.read(0, ct); 
+        std::cout << "cache hit read key = 0 --> value = " << val2 << std::endl; 
+
+        // test write and then read 
+        if (id == c0) {
+            std::cout << "node " << id << ": writing key=0 as 999" << std::endl; 
+            cache.write(0, 999, ct); 
+            uint64_t val3 = cache.read(0, ct); 
+            std::cout << "after write, read key = 0 --> value = " << val3 << std::endl; 
+        }
+
+        // final barrier 
+        ct->arrive_control_barrier(cn - c0 + 1); 
+        
         // make threads and start them
-        std::vector<std::thread> worker_threads; 
-        for (uint64_t i = 0; i < args->uget(remus::CN_THREADS); i++) {
-            worker_threads.push_back(std::thread(
-                [&](uint64_t i) {
-                    // each node has its own compute thread context 
-                    auto &ct = compute_threads[i]; 
-                    // wait for all threads to be created across all nodes
-                    ct->arrive_control_barrier(total_threads);
+        // std::vector<std::thread> worker_threads; 
+        // for (uint64_t i = 0; i < args->uget(remus::CN_THREADS); i++) {
+        //     worker_threads.push_back(std::thread(
+        //         [&](uint64_t i) {
+        //             // each node has its own compute thread context 
+        //             auto &ct = compute_threads[i]; 
+        //             // wait for all threads to be created across all nodes
+        //             ct->arrive_control_barrier(total_threads);
 
-                    std::cout << "past barrier 1, going to construct gamcache" << std::endl; 
+        //             std::cout << "past barrier 1, going to construct gamcache" << std::endl; 
 
-                    // first thread of each node will read the root, construct the cache 
-                    if (i == 0) {
-                        // every node reads the root, makes a local reference to it
-                        std::cout << "about to read root data" << std::endl; 
-                        auto root = ct->get_root<GAddr>(); 
-                        gaddr = ct->Read(root);
-                        std::cout << "read root data" << std::endl; 
-                        auto mbox_base = gaddr.mailboxes; 
-
-                        std::cout << "building cache constructor" << std::endl; 
-                        // call constructor for GAMcache
-                        cache = std::make_shared<GAMcache>(id, mbox_base);
-                    }
-                    std::cout << "does the new barrier exist too" << std::endl; 
-                    ct->arrive_control_barrier(total_threads); 
-                    
-                    auto testdata_ptr = gaddr.testdata; 
-                    std::cout << "testdata_ptr: " << testdata_ptr.id() << ", " << testdata_ptr.address() << std::endl; 
-
-                    ct->arrive_control_barrier(total_threads); 
-                    std::cout << "past latest barrier" << std::endl; 
-
-                    // first thread of each compute node will be reserved for polling 
-                    if (i == 0) {
-                        std::cout << "polling thread, " << id << ", " << i << std::endl; 
-                        // for now skipping polling, just test local reads 
-                        // so local read test: 
-                        //uint64_t res = cache.read(testdata_ptr, ct); 
-                        cache->pollMailbox(ct); 
-                    } else {
-                        std::cout << "not polling thread, " << id << ", " << i << std::endl; 
-
-                        // local read from node 1 to node 1 
-                        if (id == c0) {
-                            uint64_t res = cache->read(testdata_ptr, ct); 
-                            std::cout << "local read result: " << res << std::endl; 
-                        }
-                        // remote read from node 2 to node 1 
-                        if (id == c0+1) {
-                            std::cout << "requesting reading node " << id << std::endl; 
-                            std::cout << testdata_ptr.id() << ", " << testdata_ptr.address() << std::endl; 
-                            uint64_t res = cache->read(testdata_ptr, ct); 
-                            std::cout << "remote read result: " << res << std::endl; 
-                            std::cout << "remote read again (cache hit?)"; 
-                            uint64_t res2 = cache->read(testdata_ptr, ct); 
-                            std::cout << "remote read 2 result: " << res2 << std::endl; 
-                        }
-                    }
-
-                    std::cout << "thread " << i << " on node " << id << " about to hit the barrier, total=" << total_threads << std::endl; 
-                    ct->arrive_control_barrier(total_threads); 
-                },
-            i));
-        }
-        for (auto &t : worker_threads) {
-            t.join(); 
-        }
+        //             // first thread of each node will read the root, construct the cache 
+        //           },
+        //     i));
+        // }
+        // for (auto &t : worker_threads) {
+        //     t.join(); 
+        // }
     } 
 };
