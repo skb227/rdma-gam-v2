@@ -32,19 +32,27 @@ public:
             return itr->second.data[0]; 
         } 
         // else if not cached: 
+        std::cout << "read not cached" << std::endl; 
 
         // read directory to find data addr         (first memory node) 
+        std::cout << dirptr << std::endl; 
         Directory dir = ct->Read(dirptr); 
         remus::rdma_ptr<DataEntry> dataptr = dir.entries[key].ptr; 
 
+        std::cout << "read directory to find data addr" << std::endl; 
+
         // read the actual data                     (second memory node)
         DataEntry data = ct->Read(dataptr); 
+
+        std::cout << "read actual data" << std::endl; 
 
         // cache it locally 
         CacheLine cline{}; 
         cline.flag = SHARED; 
         cline.data[0] = data.value; 
         cache[key] = cline; 
+
+        std::cout << "cached it locally" << std::endl; 
 
         return data.value; 
     }

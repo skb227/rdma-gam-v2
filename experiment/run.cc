@@ -1,6 +1,7 @@
 #include <memory>
 #include <unistd.h>
 #include <vector>
+#include <random> 
 
 #include <iostream>
 
@@ -76,8 +77,8 @@ int main (int argc, char **argv) {
             compute_threads.push_back(std::make_shared<remus::ComputeThread>(id, compute_node, args)); 
         }
 
-        // BECAUSE THIS IS CURRENTLY SINGLE-THREADED :::
-        auto &ct = compute_threads[0];
+        // to get thread 0 on cn0, to create the directory 
+        auto &ct0 = compute_threads[0];
 
         // rdma ptr to directory -- shared
         remus::rdma_ptr<Directory> dirptr; 
@@ -85,20 +86,21 @@ int main (int argc, char **argv) {
         // CN 0 will construct the data structure (directory) and save it in root
         if (id == c0) {
             // allocated directory structure on MN0 
-            dirptr = ct->allocate<Directory>(); 
+            dirptr = ct0->allocate<Directory>(); 
             
             // allocate N DataEntry slots -- each with own rdma_ptr
-            const uint64_t N = 4;             // number of kv pairs for testing
+            const uint64_t N = 16;             // number of kv pairs for testing
             remus::rdma_ptr<DataEntry> dataptrs[N];
             for (uint64_t i = 0; i < N; i++) {
-                dataptrs[i] = ct->allocate<DataEntry>(); 
+                dataptrs[i] = ct0->allocate<DataEntry>(); 
             }
 
             // write test values to each DataEntry slots 
             for (uint64_t i = 0; i < N; i++) {
+                std::cout << "writing to slot " << i << std::endl; 
                 DataEntry d{};
                 d.value = (i + 1) * 10;         // key 0 = 10, key 1 = 20, ... 
-                ct->Write(dataptrs[i], d);
+                ct0->Write(dataptrs[i], d);
             }
 
             // fill in directory 
@@ -107,60 +109,95 @@ int main (int argc, char **argv) {
                 dir.entries[i].key = i; 
                 dir.entries[i].ptr = dataptrs[i];
             }
-            ct->Write(dirptr, dir); 
+            ct0->Write(dirptr, dir); 
 
             // set directory as the root
-            ct->set_root(dirptr); 
+            ct0->set_root(dirptr); 
         }
         
         // barrier -- to ensure CN0 has set the root before any other node gets root 
-        ct->arrive_control_barrier(cn - c0 + 1); 
+        ct0->arrive_control_barrier(cn - c0 + 1); 
 
-        // every node gets the root directory 
-        dirptr = ct->get_root<Directory>(); 
+        // each node reads dirptr 
+        dirptr = ct0->get_root<Directory>();
 
-        // each node constructs the cache
-        GAMcache cache(id, dirptr); 
+        // each node has a cache 
+        auto cache = std::make_shared<GAMcache>(id, dirptr); 
 
-        // test reads
-        for (uint64_t i = 0; i < 4; i++) {
-            uint64_t val = cache.read(i, ct); 
-            std::cout << "read key = " << i << " --> value = " << val << " (expected " << (i+1)*10 << ")" << std::endl; 
-        }
-
-        // test cache hit (read the same)
-        uint64_t val2 = cache.read(0, ct); 
-        std::cout << "cache hit read key = 0 --> value = " << val2 << std::endl; 
-
-        // test write and then read 
-        if (id == c0) {
-            std::cout << "node " << id << ": writing key=0 as 999" << std::endl; 
-            cache.write(0, 999, ct); 
-            uint64_t val3 = cache.read(0, ct); 
-            std::cout << "after write, read key = 0 --> value = " << val3 << std::endl; 
-        }
-
-        // final barrier 
-        ct->arrive_control_barrier(cn - c0 + 1); 
-        
         // make threads and start them
-        // std::vector<std::thread> worker_threads; 
-        // for (uint64_t i = 0; i < args->uget(remus::CN_THREADS); i++) {
-        //     worker_threads.push_back(std::thread(
-        //         [&](uint64_t i) {
-        //             // each node has its own compute thread context 
-        //             auto &ct = compute_threads[i]; 
-        //             // wait for all threads to be created across all nodes
-        //             ct->arrive_control_barrier(total_threads);
+        std::vector<std::thread> worker_threads; 
+        for (uint64_t i = 0; i < args->uget(remus::CN_THREADS); i++) {
+            // i = 0 is first thread, i = 1 is second thread 
+            worker_threads.push_back(std::thread(
+                [&](uint64_t i) {
+                    // each node has its own compute thread context 
+                    auto &ct = compute_threads[i]; 
+                    // wait for all threads to be created across all nodes
+                    ct->arrive_control_barrier(total_threads);
 
-        //             std::cout << "past barrier 1, going to construct gamcache" << std::endl; 
+                    std::cout << "passing barrier" << std::endl; 
 
-        //             // first thread of each node will read the root, construct the cache 
-        //           },
-        //     i));
-        // }
-        // for (auto &t : worker_threads) {
-        //     t.join(); 
-        // }
+                    // and then wait 
+                    ct->arrive_control_barrier(total_threads);
+
+                    // set up random number generator 
+                    std::uniform_int_distribution<> dist(0, 7); 
+                    std::mt19937 gen(std::random_device{}());
+
+                    std::cout << "about to start work" << std::endl; 
+
+                    // so work for thread 0 
+                    if (i == 0) {
+                        std::cout << "thread 0 work" << std::endl; 
+                        // test reads 
+                        std::cout << "testing reads" << std::endl; 
+                        for (uint64_t i = 0; i < 32; i++) {
+                            std::cout << "testing read on thread 0" << std::endl; 
+                            uint64_t readid = dist(gen); 
+                            std::cout << "testing read on thread 0 on key " << readid << std::endl; 
+                            uint64_t val = cache->read(readid, ct); 
+                            std::cout << "read "<< val << std::endl; 
+                        }
+                        // test writes 
+                        std::cout << "testing writes" << std::endl; 
+                        for (uint64_t i = 0; i < 8; i++) {
+                            uint64_t readid = dist(gen); 
+                            cache->write(readid, dist(gen)*10, ct);
+                            uint64_t val3 = cache->read(readid, ct); 
+                            std::cout << "after write, read " << val3 << std::endl; 
+                        }
+                    }
+                    // and then work for thread 1 
+                    else if (i == 1) {
+                        std::cout << "thread 1 workload" << std::endl;
+                        // test reads 
+                        std::cout << "testing reads" << std::endl; 
+                        for (uint64_t i = 0; i < 32; i++) {
+                            std::cout << "testing read on thread 1" << std::endl; 
+                            uint64_t val = cache->read(dist(gen)+8, ct); 
+                            std::cout << "read "<< val << std::endl; 
+                        }
+                        // test writes 
+                        std::cout << "testing writes" << std::endl; 
+                        for (uint64_t i = 0; i < 8; i++) {
+                            uint64_t readid = dist(gen)+8; 
+                            cache->write(readid, dist(gen)*10, ct);
+                            uint64_t val3 = cache->read(readid, ct); 
+                            std::cout << "after write, read " << val3 << std::endl; 
+                        }
+                    } 
+
+                    // final barrier 
+                    ct->arrive_control_barrier(cn - c0 + 1); 
+
+                    std::cout << "past barrier 1, going to construct gamcache" << std::endl; 
+
+                    // first thread of each node will read the root, construct the cache 
+                  },
+            i));
+        }
+        for (auto &t : worker_threads) {
+            t.join(); 
+        } 
     } 
 };
