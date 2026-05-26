@@ -69,6 +69,10 @@ int main (int argc, char **argv) {
 
     // if compute node, create threads and run experiment 
     if (id >= c0 && id <= cn) { 
+        // set up output file stream
+        std::ofstream file1("thread0.txt", std::ios::out); 
+        std::ofstream file2("thread1.txt", std::ios::out);
+
         // create ComputeThread contexts
         std::vector<std::shared_ptr<remus::ComputeThread>> compute_threads; 
         uint64_t total_threads = (cn - c0 + 1) * args->uget(remus::CN_THREADS); 
@@ -148,42 +152,42 @@ int main (int argc, char **argv) {
 
                     // so work for thread 0 
                     if (i == 0) {
-                        std::cout << "thread 0 work" << std::endl; 
+                        file1 << "thread 0 work" << std::endl; 
                         // test reads 
-                        std::cout << "testing reads" << std::endl; 
+                        file1 << "testing reads" << std::endl; 
                         for (uint64_t i = 0; i < 32; i++) {
-                            std::cout << "testing read on thread 0" << std::endl; 
+                            file1 << "testing read on thread 0" << std::endl; 
                             uint64_t readid = dist(gen); 
-                            std::cout << "testing read on thread 0 on key " << readid << std::endl; 
+                            file1 << "testing read on thread 0 on key " << readid << std::endl; 
                             uint64_t val = cache->read(readid, ct); 
-                            std::cout << "read "<< val << std::endl; 
+                            file1 << "read "<< val << std::endl; 
                         }
                         // test writes 
-                        std::cout << "testing writes" << std::endl; 
+                        file1 << "testing writes" << std::endl; 
                         for (uint64_t i = 0; i < 8; i++) {
                             uint64_t readid = dist(gen); 
                             cache->write(readid, dist(gen)*10, ct);
                             uint64_t val3 = cache->read(readid, ct); 
-                            std::cout << "after write, read " << val3 << std::endl; 
+                            file1 << "after write, read key " << readid << " as " << val3 << std::endl; 
                         }
                     }
                     // and then work for thread 1 
                     else if (i == 1) {
-                        std::cout << "thread 1 workload" << std::endl;
+                        file2 << "thread 1 workload" << std::endl;
                         // test reads 
-                        std::cout << "testing reads" << std::endl; 
+                        file2 << "testing reads" << std::endl; 
                         for (uint64_t i = 0; i < 32; i++) {
-                            std::cout << "testing read on thread 1" << std::endl; 
+                            file2 << "testing read on thread 1" << std::endl; 
                             uint64_t val = cache->read(dist(gen)+8, ct); 
-                            std::cout << "read "<< val << std::endl; 
+                            file2 << "read "<< val << std::endl; 
                         }
                         // test writes 
-                        std::cout << "testing writes" << std::endl; 
+                        file2 << "testing writes" << std::endl; 
                         for (uint64_t i = 0; i < 8; i++) {
                             uint64_t readid = dist(gen)+8; 
                             cache->write(readid, dist(gen)*10, ct);
                             uint64_t val3 = cache->read(readid, ct); 
-                            std::cout << "after write, read " << val3 << std::endl; 
+                            file2 << "after write, read key " << readid << " as " << val3 << std::endl; 
                         }
                     } 
 
