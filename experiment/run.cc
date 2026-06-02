@@ -76,7 +76,7 @@ int main (int argc, char **argv) {
         // create ComputeThread contexts
         std::vector<std::shared_ptr<remus::ComputeThread>> compute_threads; 
         uint64_t total_threads = (cn - c0 + 1) * args->uget(remus::CN_THREADS); 
-        std::cout << "just so that total_threads is used " << total_threads << std::endl; 
+        // std::cout << "just so that total_threads is used " << total_threads << std::endl; 
         for (uint64_t i = 0; i < args->uget(remus::CN_THREADS); ++i) {
             compute_threads.push_back(std::make_shared<remus::ComputeThread>(id, compute_node, args)); 
         }
@@ -87,13 +87,14 @@ int main (int argc, char **argv) {
         // rdma ptr to directory -- shared
         remus::rdma_ptr<Directory> dirptr; 
 
+        // (prefill data structure)
         // CN 0 will construct the data structure (directory) and save it in root
         if (id == c0) {
-            // allocated directory structure on MN0 
+            // allocated directory structure on MN0 (supposedly?)
             dirptr = ct0->allocate<Directory>(); 
             
             // allocate N DataEntry slots -- each with own rdma_ptr
-            const uint64_t N = 16;             // number of kv pairs for testing
+            const uint64_t N = 64;             // number of kv pairs for testing
             remus::rdma_ptr<DataEntry> dataptrs[N];
             for (uint64_t i = 0; i < N; i++) {
                 dataptrs[i] = ct0->allocate<DataEntry>(); 
@@ -101,9 +102,9 @@ int main (int argc, char **argv) {
 
             // write test values to each DataEntry slots 
             for (uint64_t i = 0; i < N; i++) {
-                std::cout << "writing to slot " << i << std::endl; 
+                // std::cout << "writing to slot " << i << std::endl; 
                 DataEntry d{};
-                d.value = (i + 1) * 10;         // key 0 = 10, key 1 = 20, ... 
+                d.value = (i + 1) * 10;         // key 0 = 10, key 1 = 20, ...
                 ct0->Write(dataptrs[i], d);
             }
 
@@ -111,6 +112,7 @@ int main (int argc, char **argv) {
             Directory dir{};
             for (uint64_t i = 0; i < N; i++) {
                 dir.entries[i].key = i; 
+                // std::cout << "writing key " << i << " to node " << dataptrs[i].id() << std::endl; 
                 dir.entries[i].ptr = dataptrs[i];
             }
             ct0->Write(dirptr, dir); 
@@ -139,62 +141,70 @@ int main (int argc, char **argv) {
                     // wait for all threads to be created across all nodes
                     ct->arrive_control_barrier(total_threads);
 
-                    std::cout << "passing barrier" << std::endl; 
+                    // std::cout << "passing barrier" << std::endl; 
 
                     // and then wait 
                     ct->arrive_control_barrier(total_threads);
 
                     // set up random number generator 
-                    std::uniform_int_distribution<> dist(0, 7); 
+                    std::uniform_int_distribution<> dist(0, 31); 
+                    std::uniform_int_distribution<> dist2(0, 1);
                     std::mt19937 gen(std::random_device{}());
 
-                    std::cout << "about to start work" << std::endl; 
+                    // std::cout << "about to start work" << std::endl; 
 
-                    // so work for thread 0 
+                    // get starting time before thread does any work 
+                    std::chrono::high_resolution_clock::time_point start_thr = std::chrono::high_resolution_clock::now(); 
+                    ct->arrive_control_barrier(total_threads);
+
+                    // t0 workload 
                     if (i == 0) {
-                        file1 << "thread 0 work" << std::endl; 
-                        // test reads 
-                        file1 << "testing reads" << std::endl; 
-                        for (uint64_t i = 0; i < 32; i++) {
-                            file1 << "testing read on thread 0" << std::endl; 
-                            uint64_t readid = dist(gen); 
-                            file1 << "testing read on thread 0 on key " << readid << std::endl; 
-                            uint64_t val = cache->read(readid, ct); 
-                            file1 << "read "<< val << std::endl; 
-                        }
-                        // test writes 
-                        file1 << "testing writes" << std::endl; 
-                        for (uint64_t i = 0; i < 8; i++) {
-                            uint64_t readid = dist(gen); 
-                            cache->write(readid, dist(gen)*10, ct);
-                            uint64_t val3 = cache->read(readid, ct); 
-                            file1 << "after write, read key " << readid << " as " << val3 << std::endl; 
+                        file1 << "thread 0 workload" << std::endl; 
+                        uint64_t num_reads = 0; 
+                        for (uint64_t i = 0; i < 20000; i++) {
+                            uint64_t op = dist2(gen);
+                            if (op == 0 && num_reads < 10000) {
+                                num_reads++; 
+                                uint64_t readid = dist(gen); 
+                                uint64_t val = cache->read(readid, ct); 
+                                file1 << "t0 read key " << readid << ", val " << val << std::endl; 
+                            } else {
+                                uint64_t readid = dist(gen); 
+                                cache->write(readid, dist(gen)*10, ct); 
+                                uint64_t val3 = cache->read(readid, ct); 
+                                file1 << "t0 write, read key " << readid << ", val " << val3 << std::endl; 
+                            }
                         }
                     }
-                    // and then work for thread 1 
+                    // t1 workload 
                     else if (i == 1) {
-                        file2 << "thread 1 workload" << std::endl;
-                        // test reads 
-                        file2 << "testing reads" << std::endl; 
-                        for (uint64_t i = 0; i < 32; i++) {
-                            file2 << "testing read on thread 1" << std::endl; 
-                            uint64_t val = cache->read(dist(gen)+8, ct); 
-                            file2 << "read "<< val << std::endl; 
-                        }
-                        // test writes 
-                        file2 << "testing writes" << std::endl; 
-                        for (uint64_t i = 0; i < 8; i++) {
-                            uint64_t readid = dist(gen)+8; 
-                            cache->write(readid, dist(gen)*10, ct);
-                            uint64_t val3 = cache->read(readid, ct); 
-                            file2 << "after write, read key " << readid << " as " << val3 << std::endl; 
+                        file2 << "thread 1 workload" << std::endl; 
+                        uint64_t num_reads = 0; 
+                        for (uint64_t i = 0; i < 20000; i++) {
+                            uint64_t op = dist2(gen);
+                            if (op == 0 && num_reads < 10000) {
+                                num_reads++; 
+                                uint64_t readid = dist(gen)+32; 
+                                uint64_t val = cache->read(readid, ct); 
+                                file2 << "t1 read key " << readid << ", val " << val << std::endl; 
+                            } else {
+                                uint64_t readid = dist(gen)+32; 
+                                cache->write(readid, dist(gen)*10, ct); 
+                                uint64_t val3 = cache->read(readid, ct); 
+                                file2 << "t1 write, read key " << readid << ", val " << val3 << std::endl; 
+                            }
                         }
                     } 
 
                     // final barrier 
                     ct->arrive_control_barrier(cn - c0 + 1); 
 
-                    std::cout << "past barrier 1, going to construct gamcache" << std::endl; 
+                    // get ending time
+                    auto end_thread = std::chrono::high_resolution_clock::now(); 
+                    auto dur = std::chrono::duration_cast<std::chrono::microseconds>(end_thread - start_thr).count(); 
+                    std::cout << dur << std::endl; 
+
+                    // std::cout << "past barrier 1, going to construct gamcache" << std::endl; 
 
                     // first thread of each node will read the root, construct the cache 
                   },
