@@ -10,11 +10,6 @@ using CT = std::shared_ptr<remus::ComputeThread>;
 
 class GAMcache {
 
-    // struct CacheEntry {
-    //     CacheLine cline; 
-    //     std::shared_mutex mtxlock; 
-    // }
-
     // local cache
     std::unordered_map<uint64_t, CacheLine> cache; 
 
@@ -50,7 +45,6 @@ public:
         : dirptr(dir), thisID(nodeID) {}
     
     uint64_t read(uint64_t key, CT &ct) {
-        // std::cout << "in read" << std::endl; 
         // to shut compiler up about thisid 
         if (thisID == 1000000) { return 0; }
 
@@ -71,24 +65,16 @@ public:
         } 
 
         // else if not cached: 
-        // std::cout << "read not cached" << std::endl; 
 
         // read directory to find data addr         (first memory node) 
-        // std::cout << dirptr << std::endl; 
         Directory dir = ct->Read(dirptr); 
         dataptr = dir.entries[key].ptr; 
-
-        // std::cout << "reading key " << key << " on dataptr id " << dataptr.id() << std::endl; 
-
-        // std::cout << "read directory to find data addr" << std::endl; 
 
         // acquire lock on DataEntry 
         remus::rdma_ptr<uint64_t> lockptr = acquire(dataptr, ct);
 
         // read the actual data                     (second memory node)
         DataEntry data = ct->Read(dataptr); 
-
-        // std::cout << "read actual data" << std::endl; 
 
         // release the lock 
         release(lockptr, ct); 
@@ -102,23 +88,10 @@ public:
         cline.version = data.version;
         cache[key] = cline; 
 
-        // std::cout << "cached it locally" << std::endl; 
-
         return data.value; 
-
-        /* for testing without cache */
-/*
-        Directory dir = ct->Read(dirptr); 
-        remus::rdma_ptr<DataEntry> dataptr = dir.entries[key].ptr;
-
-        DataEntry data = ct->Read(dataptr);
-
-        return data.value; 
-*/
     }
 
     void write(uint64_t key, uint64_t val, CT &ct) {
-        // std::cout << "in write" << std::endl; 
         // data addr 
         remus::rdma_ptr<DataEntry> dataptr; 
         // check if already in local cache 
@@ -138,7 +111,6 @@ public:
         // update the version count 
         auto base = dataptr.raw(); 
         ct->FetchAndAdd(rdma_ptr<uint64_t>(base+offsetof(DataEntry, version)), 1);
-        // DataEntry d = ct->Read(dataptr); d.version.fetch_add(1, ct); 
 
         // write new value only to value to not overwrite version 
         ct->Write(remus::rdma_ptr<uint64_t>(base+offsetof(DataEntry, value)), val); 
@@ -150,18 +122,6 @@ public:
         if (itr != cache.end()) {
             itr->second.flag = INVALID; 
         }
-
-/* for testing without cache */
-/*
-        // read directory to find data addr         (first memory node)
-        Directory dir = ct->Read(dirptr); 
-        remus::rdma_ptr<DataEntry> dataptr = dir.entries[key].ptr; 
-
-        // write directory to address               (second memory node)
-        DataEntry data; 
-        data.value = val; 
-        ct->Write(dataptr, data); 
-*/
     }
       
 };
