@@ -90,6 +90,7 @@ int main (int argc, char **argv) {
         // (prefill data structure)
         // CN 0 will construct the data structure (directory) and save it in root
         if (id == c0) {
+            // std::cout << "do i at least get to here" << std::endl; 
             // allocated directory structure on MN0 (supposedly?)
             dirptr = ct0->allocate<Directory>(); 
             
@@ -104,6 +105,7 @@ int main (int argc, char **argv) {
             for (uint64_t i = 0; i < N; i++) {
                 // std::cout << "writing to slot " << i << std::endl; 
                 DataEntry d{};
+                std::cout << "initialized" << std::endl; 
                 d.value = (i + 1) * 10;         // key 0 = 10, key 1 = 20, ...
                 ct0->Write(dataptrs[i], d);
             }
@@ -119,6 +121,8 @@ int main (int argc, char **argv) {
 
             // set directory as the root
             ct0->set_root(dirptr); 
+
+            // std::cout << "directory filled and set as root" << std::endl; 
         }
         
         // barrier -- to ensure CN0 has set the root before any other node gets root 
@@ -159,6 +163,7 @@ int main (int argc, char **argv) {
 
                     // t0 workload 
                     if (i == 0) {
+                        // std::cout << "starting workload" << std::endl; 
                         file1 << "thread 0 workload" << std::endl; 
                         uint64_t num_reads = 0; 
                         for (uint64_t i = 0; i < 20000; i++) {

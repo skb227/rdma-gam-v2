@@ -2,12 +2,18 @@
 
 #include <unordered_map>
 #include <mutex>
+#include <shared_mutex>
 #include <remus/remus.h>
 #include "components.h"
 
 using CT = std::shared_ptr<remus::ComputeThread>; 
 
 class GAMcache {
+
+    // struct CacheEntry {
+    //     CacheLine cline; 
+    //     std::shared_mutex mtxlock; 
+    // }
 
     // local cache
     std::unordered_map<uint64_t, CacheLine> cache; 
@@ -18,43 +24,82 @@ class GAMcache {
     // this node 
     uint64_t thisID; 
 
+    // acquire lock on data entry 
+    remus::rdma_ptr<uint64_t> acquire(remus::rdma_ptr<DataEntry> dataptr, CT &ct) {
+        // std::cout << "is the issue in acquire" << std::endl; 
+        // build lock ptr 
+        remus::rdma_ptr<uint64_t> lockptr(dataptr.raw()+offsetof(DataEntry, lock)); 
+        while (true) {  // loop to keep trying (spin lock) 
+            //if (lockptr.compare_exchange_weak(0, 1, ct)) {        // ~ equivalent to tas
+            if (ct->CompareAndSwap(lockptr, (uint64_t)0, (uint64_t)1)) {
+                break; 
+            }
+        } 
+        return lockptr; 
+    }
+
+    // release lock on data entry 
+    void release(remus::rdma_ptr<uint64_t> lockptr, CT &ct) {
+        // std::cout << "is the issue in release" << std::endl; 
+        ct->Write(lockptr, (uint64_t)0); 
+    }
+
 public: 
 
     GAMcache(uint64_t nodeID, remus::rdma_ptr<Directory> dir) 
         : dirptr(dir), thisID(nodeID) {}
     
     uint64_t read(uint64_t key, CT &ct) {
+        // std::cout << "in read" << std::endl; 
         // to shut compiler up about thisid 
         if (thisID == 1000000) { return 0; }
+
+        // data addr 
+        remus::rdma_ptr<DataEntry> dataptr; 
     
         // first check if already in local cache 
         auto itr = cache.find(key); 
-        // if exists, simply return the cached data
+        // if exists, use the stored addr 
         if (itr != cache.end() && itr->second.flag != INVALID) {
-            return itr->second.data[0]; 
+            dataptr = itr->second.ptr; 
+            // check that it's the most up-to-date version (versioning values match)
+            DataEntry check = ct->Read(dataptr);
+            if (check.version  == itr->second.version) {
+                // if versioning matches, return the cached data 
+                return itr->second.data[0]; 
+            } // else, continue 
         } 
+
         // else if not cached: 
         // std::cout << "read not cached" << std::endl; 
 
         // read directory to find data addr         (first memory node) 
         // std::cout << dirptr << std::endl; 
         Directory dir = ct->Read(dirptr); 
-        remus::rdma_ptr<DataEntry> dataptr = dir.entries[key].ptr; 
+        dataptr = dir.entries[key].ptr; 
 
         // std::cout << "reading key " << key << " on dataptr id " << dataptr.id() << std::endl; 
 
         // std::cout << "read directory to find data addr" << std::endl; 
+
+        // acquire lock on DataEntry 
+        remus::rdma_ptr<uint64_t> lockptr = acquire(dataptr, ct);
 
         // read the actual data                     (second memory node)
         DataEntry data = ct->Read(dataptr); 
 
         // std::cout << "read actual data" << std::endl; 
 
+        // release the lock 
+        release(lockptr, ct); 
+
         // cache it locally 
         CacheLine cline{}; 
+
         cline.flag = SHARED; 
         cline.data[0] = data.value; 
         cline.ptr = dataptr; 
+        cline.version = data.version;
         cache[key] = cline; 
 
         // std::cout << "cached it locally" << std::endl; 
@@ -73,6 +118,7 @@ public:
     }
 
     void write(uint64_t key, uint64_t val, CT &ct) {
+        // std::cout << "in write" << std::endl; 
         // data addr 
         remus::rdma_ptr<DataEntry> dataptr; 
         // check if already in local cache 
@@ -86,10 +132,19 @@ public:
             dataptr = dir.entries[key].ptr; 
         }
 
-        // write directory to the address 
-        DataEntry data; 
-        data.value = val; 
-        ct->Write(dataptr, data); 
+        // acquire lock 
+        remus::rdma_ptr<uint64_t> lockptr = acquire(dataptr, ct); 
+
+        // update the version count 
+        auto base = dataptr.raw(); 
+        ct->FetchAndAdd(rdma_ptr<uint64_t>(base+offsetof(DataEntry, version)), 1);
+        // DataEntry d = ct->Read(dataptr); d.version.fetch_add(1, ct); 
+
+        // write new value only to value to not overwrite version 
+        ct->Write(remus::rdma_ptr<uint64_t>(base+offsetof(DataEntry, value)), val); 
+
+        // release the lock
+        release(lockptr, ct); 
 
         // invalidate local cache entry (if exists)
         if (itr != cache.end()) {
