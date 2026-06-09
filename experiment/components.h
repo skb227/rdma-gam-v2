@@ -36,7 +36,7 @@ struct DirEntry {
 
 // directory -- array of DirEntry instances, allocated on (arbitrarily) on MN0 
 struct Directory {
-    DirEntry entries[64]; 
+    DirEntry entries[128]; 
 };
 
 // cache line entry (exist on remote nodes) 

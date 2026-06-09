@@ -69,10 +69,6 @@ int main (int argc, char **argv) {
 
     // if compute node, create threads and run experiment 
     if (id >= c0 && id <= cn) { 
-        // set up output file stream
-        std::ofstream file1("thread0.txt", std::ios::out); 
-        std::ofstream file2("thread1.txt", std::ios::out);
-
         // create ComputeThread contexts
         std::vector<std::shared_ptr<remus::ComputeThread>> compute_threads; 
         uint64_t total_threads = (cn - c0 + 1) * args->uget(remus::CN_THREADS); 
@@ -95,7 +91,7 @@ int main (int argc, char **argv) {
             dirptr = ct0->allocate<Directory>(); 
             
             // allocate N DataEntry slots -- each with own rdma_ptr
-            const uint64_t N = 64;             // number of kv pairs for testing
+            const uint64_t N = 128;             // number of kv pairs for testing
             remus::rdma_ptr<DataEntry> dataptrs[N];
             for (uint64_t i = 0; i < N; i++) {
                 dataptrs[i] = ct0->allocate<DataEntry>(); 
@@ -105,7 +101,6 @@ int main (int argc, char **argv) {
             for (uint64_t i = 0; i < N; i++) {
                 // std::cout << "writing to slot " << i << std::endl; 
                 DataEntry d{};
-                std::cout << "initialized" << std::endl; 
                 d.value = (i + 1) * 10;         // key 0 = 10, key 1 = 20, ...
                 ct0->Write(dataptrs[i], d);
             }
@@ -145,13 +140,13 @@ int main (int argc, char **argv) {
                     // wait for all threads to be created across all nodes
                     ct->arrive_control_barrier(total_threads);
 
-                    // std::cout << "passing barrier" << std::endl; 
-
+                    // each thread makes its own file 
+                    std::ofstream file("thread" + std::to_string(i) + ".txt", std::ios::out); 
                     // and then wait 
                     ct->arrive_control_barrier(total_threads);
 
                     // set up random number generator 
-                    std::uniform_int_distribution<> dist(0, 31); 
+                    std::uniform_int_distribution<> dist(0, 127); 
                     std::uniform_int_distribution<> dist2(0, 1);
                     std::mt19937 gen(std::random_device{}());
 
@@ -161,45 +156,22 @@ int main (int argc, char **argv) {
                     std::chrono::high_resolution_clock::time_point start_thr = std::chrono::high_resolution_clock::now(); 
                     ct->arrive_control_barrier(total_threads);
 
-                    // t0 workload 
-                    if (i == 0) {
-                        // std::cout << "starting workload" << std::endl; 
-                        file1 << "thread 0 workload" << std::endl; 
-                        uint64_t num_reads = 0; 
-                        for (uint64_t i = 0; i < 20000; i++) {
-                            uint64_t op = dist2(gen);
-                            if (op == 0 && num_reads < 10000) {
-                                num_reads++; 
-                                uint64_t readid = dist(gen); 
-                                uint64_t val = cache->read(readid, ct); 
-                                file1 << "t0 read key " << readid << ", val " << val << std::endl; 
-                            } else {
-                                uint64_t readid = dist(gen); 
-                                cache->write(readid, dist(gen)*10, ct); 
-                                uint64_t val3 = cache->read(readid, ct); 
-                                file1 << "t0 write, read key " << readid << ", val " << val3 << std::endl; 
-                            }
+                    // each thread workload
+                    uint64_t num_reads = 0; 
+                    for (uint64_t k = 0; k < 20000; k++) {
+                        uint64_t op = dist2(gen); 
+                        if (op == 0 && num_reads < 10000) {
+                            num_reads++;
+                            uint64_t readid = dist(gen); 
+                            uint64_t val = cache->read(readid, ct); 
+                            file << "read key " << readid << ", val " << val << std::endl; 
+                        } else {
+                            uint64_t readid = dist(gen); 
+                            cache->write(readid, dist(gen)*10, ct); 
+                            uint64_t val3 = cache->read(readid, ct); 
+                            file << "write, read key " << readid << ", val " << val3 << std::endl; 
                         }
                     }
-                    // t1 workload 
-                    else if (i == 1) {
-                        file2 << "thread 1 workload" << std::endl; 
-                        uint64_t num_reads = 0; 
-                        for (uint64_t i = 0; i < 20000; i++) {
-                            uint64_t op = dist2(gen);
-                            if (op == 0 && num_reads < 10000) {
-                                num_reads++; 
-                                uint64_t readid = dist(gen)+32; 
-                                uint64_t val = cache->read(readid, ct); 
-                                file2 << "t1 read key " << readid << ", val " << val << std::endl; 
-                            } else {
-                                uint64_t readid = dist(gen)+32; 
-                                cache->write(readid, dist(gen)*10, ct); 
-                                uint64_t val3 = cache->read(readid, ct); 
-                                file2 << "t1 write, read key " << readid << ", val " << val3 << std::endl; 
-                            }
-                        }
-                    } 
 
                     // final barrier 
                     ct->arrive_control_barrier(cn - c0 + 1); 

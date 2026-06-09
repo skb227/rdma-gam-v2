@@ -13,6 +13,9 @@ class GAMcache {
     // local cache
     std::unordered_map<uint64_t, CacheLine> cache; 
 
+    // mtx lock on cache
+    std::shared_mutex mtxlock; 
+
     // ptr to the directory on MN0
     remus::rdma_ptr<Directory> dirptr; 
 
@@ -21,7 +24,6 @@ class GAMcache {
 
     // acquire lock on data entry 
     remus::rdma_ptr<uint64_t> acquire(remus::rdma_ptr<DataEntry> dataptr, CT &ct) {
-        // std::cout << "is the issue in acquire" << std::endl; 
         // build lock ptr 
         remus::rdma_ptr<uint64_t> lockptr(dataptr.raw()+offsetof(DataEntry, lock)); 
         while (true) {  // loop to keep trying (spin lock) 
@@ -35,7 +37,6 @@ class GAMcache {
 
     // release lock on data entry 
     void release(remus::rdma_ptr<uint64_t> lockptr, CT &ct) {
-        // std::cout << "is the issue in release" << std::endl; 
         ct->Write(lockptr, (uint64_t)0); 
     }
 
@@ -53,6 +54,8 @@ public:
     
         // first check if already in local cache 
         auto itr = cache.find(key); 
+        // acquire reader's lock 
+        std::shared_lock<std::shared_mutex> slock(mtxlock);
         // if exists, use the stored addr 
         if (itr != cache.end() && itr->second.flag != INVALID) {
             dataptr = itr->second.ptr; 
@@ -62,9 +65,14 @@ public:
                 // if versioning matches, return the cached data 
                 return itr->second.data[0]; 
             } // else, continue 
+            std::cout << "versioning mismatch, recache" << std::endl; 
         } 
 
         // else if not cached: 
+
+        // need to release read lock and grab write lock 
+        slock.unlock(); 
+        std::unique_lock<std::shared_mutex> xlock(mtxlock);
 
         // read directory to find data addr         (first memory node) 
         Directory dir = ct->Read(dirptr); 
@@ -88,6 +96,8 @@ public:
         cline.version = data.version;
         cache[key] = cline; 
 
+        xlock.unlock(); 
+
         return data.value; 
     }
 
@@ -96,6 +106,8 @@ public:
         remus::rdma_ptr<DataEntry> dataptr; 
         // check if already in local cache 
          auto itr = cache.find(key); 
+        // get xlock 
+        std::unique_lock<std::shared_mutex> xlock(mtxlock);
         // if exists, use the stored addr 
         if (itr != cache.end() && itr->second.flag != INVALID) {
             dataptr = itr->second.ptr; 
@@ -122,6 +134,8 @@ public:
         if (itr != cache.end()) {
             itr->second.flag = INVALID; 
         }
+
+        xlock.unlock(); 
     }
       
 };
