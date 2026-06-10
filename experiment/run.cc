@@ -1,7 +1,5 @@
 #include <memory>
-#include <unistd.h>
 #include <vector>
-#include <random> 
 
 #include <iostream>
 
@@ -91,7 +89,7 @@ int main (int argc, char **argv) {
             dirptr = ct0->allocate<Directory>(); 
             
             // allocate N DataEntry slots -- each with own rdma_ptr
-            const uint64_t N = 128;             // number of kv pairs for testing
+            const uint64_t N = ENTRIES;             // number of kv pairs for testing
             remus::rdma_ptr<DataEntry> dataptrs[N];
             for (uint64_t i = 0; i < N; i++) {
                 dataptrs[i] = ct0->allocate<DataEntry>(); 
@@ -146,7 +144,7 @@ int main (int argc, char **argv) {
                     ct->arrive_control_barrier(total_threads);
 
                     // set up random number generator 
-                    std::uniform_int_distribution<> dist(0, 127); 
+                    std::uniform_int_distribution<> dist(0, (ENTRIES)-1); 
                     std::uniform_int_distribution<> dist2(0, 1);
                     std::mt19937 gen(std::random_device{}());
 
@@ -158,9 +156,10 @@ int main (int argc, char **argv) {
 
                     // each thread workload
                     uint64_t num_reads = 0; 
-                    for (uint64_t k = 0; k < 20000; k++) {
+                    uint64_t read_ops = OPS * (READS/100); 
+                    for (uint64_t k = 0; k < OPS; k++) {
                         uint64_t op = dist2(gen); 
-                        if (op == 0 && num_reads < 10000) {
+                        if (op == 0 && num_reads < read_ops) {
                             num_reads++;
                             uint64_t readid = dist(gen); 
                             uint64_t val = cache->read(readid, ct); 
@@ -174,7 +173,7 @@ int main (int argc, char **argv) {
                     }
 
                     // final barrier 
-                    ct->arrive_control_barrier(cn - c0 + 1); 
+                    // ct->arrive_control_barrier(cn - c0 + 1); 
 
                     // get ending time
                     auto end_thread = std::chrono::high_resolution_clock::now(); 

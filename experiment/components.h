@@ -8,6 +8,14 @@
 
 using CT = std::shared_ptr<remus::ComputeThread>; 
 
+
+// constants
+static constexpr uint64_t ENTRIES = 128; 
+static constexpr uint64_t OPS = 20000;
+static constexpr uint64_t READS = 50;
+static constexpr uint64_t CACHE_SIZE = 64;
+// static constexpr uint64_t NUM_QUEUES = 4; 
+
 // possible states 
 enum State {
     UNSHARED,
@@ -36,7 +44,7 @@ struct DirEntry {
 
 // directory -- array of DirEntry instances, allocated on (arbitrarily) on MN0 
 struct Directory {
-    DirEntry entries[128]; 
+    DirEntry entries[ENTRIES]; 
 };
 
 // cache line entry (exist on remote nodes) 
