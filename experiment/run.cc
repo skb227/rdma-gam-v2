@@ -76,53 +76,73 @@ int main (int argc, char **argv) {
         }
 
         // to get thread 0 on cn0, to create the directory 
-        auto &ct0 = compute_threads[0];
+        auto &ct = compute_threads[0];
 
         // rdma ptr to directory -- shared
         remus::rdma_ptr<Directory> dirptr; 
 
         // (prefill data structure)
-        // CN 0 will construct the data structure (directory) and save it in root
+        // CN 0 constructs the data structure (directory) and save it in root
         if (id == c0) {
-            // std::cout << "do i at least get to here" << std::endl; 
             // allocated directory structure on MN0 (supposedly?)
-            dirptr = ct0->allocate<Directory>(); 
-            
-            // allocate N DataEntry slots -- each with own rdma_ptr
-            const uint64_t N = ENTRIES;             // number of kv pairs for testing
-            remus::rdma_ptr<DataEntry> dataptrs[N];
-            for (uint64_t i = 0; i < N; i++) {
-                dataptrs[i] = ct0->allocate<DataEntry>(); 
-            }
+            dirptr = ct->allocate<Directory>(); 
 
-            // write test values to each DataEntry slots 
-            for (uint64_t i = 0; i < N; i++) {
-                // std::cout << "writing to slot " << i << std::endl; 
-                DataEntry d{};
-                d.value = (i + 1) * 10;         // key 0 = 10, key 1 = 20, ...
-                ct0->Write(dataptrs[i], d);
-            }
-
-            // fill in directory 
-            Directory dir{};
-            for (uint64_t i = 0; i < N; i++) {
+            // initialize empty directory 
+            Directory dir{}; 
+            for (uint64_t i = 0; i < ENTRIES; i++) {
+                // DirEntry d{}; 
+                // d.key = i; 
+                // ct->Write(dir.entries[i], d); 
                 dir.entries[i].key = i; 
-                // std::cout << "writing key " << i << " to node " << dataptrs[i].id() << std::endl; 
-                dir.entries[i].ptr = dataptrs[i];
+                dir.entries[i].init(ct); 
             }
-            ct0->Write(dirptr, dir); 
 
-            // set directory as the root
-            ct0->set_root(dirptr); 
+            ct->Write(dirptr, dir); 
 
-            // std::cout << "directory filled and set as root" << std::endl; 
-        }
-        
-        // barrier -- to ensure CN0 has set the root before any other node gets root 
-        ct0->arrive_control_barrier(cn - c0 + 1); 
+            // set directory as the root 
+            ct->set_root(dirptr); 
+        } 
+
+        // wait for all nodes to reach this barrier 
+        ct->arrive_control_barrier(cn - c0 + 1); 
 
         // each node reads dirptr 
-        dirptr = ct0->get_root<Directory>();
+        dirptr = ct->get_root<Directory>();
+
+        // then each node creates its own data 
+        uint64_t numCN = cn - c0 + 1; 
+        for (uint64_t i = 0; i < ENTRIES; i++) {
+            // only allocate if this should be the home node 
+            if (i % numCN == (id - c0)) {           // so only if the value == this id    
+                // allocate the entry on this node's memory 
+                remus::rdma_ptr<DataEntry> dataptr = ct->allocate<DataEntry>(); 
+
+                // write the value 
+                DataEntry d{}; 
+                d.value = (i + 1) * 10; 
+                ct->Write(dataptr, d); 
+
+                // write the dataptr to the corresponding DirEntry splot in the Directory 
+                    // want only the ptr field of the DataEntry in entries[i] 
+                DirEntry *raw = (DirEntry *)((uintptr_t)dirptr + offsetof(Directory, entries) + i*sizeof(DirEntry)); 
+                    // cast dirptr (to the Directory) to uintptr_t to get the raw addr as an integer, can do arithmetic on it
+                    // find offset of entries field in Directory struct (0 bc it's the first member) 
+                    // to get entries[i], skip past the i DataEntry entries 
+                remus::rdma_ptr<remus::rdma_ptr<DataEntry>> ptrfield((uintptr_t)raw + offsetof(DirEntry, ptr)); 
+                    // get offset of the ptr member in DataEntry 
+                ct->Write(ptrfield, dataptr); 
+
+                /* NB: as a note -- can rewrite the above to this (simpler but extra RDMA op):
+                remus::rdma_ptr<DirEntry> entryptr(dirptr.raw() + offsetof(Directory, entries) + i*sizeof(DirEntry)); 
+                DirEntry entry = ct->Read(entryptr);
+                entry.ptr = dataptr; 
+                ct->Write(entryptr, entry);
+                */
+            }
+        }
+
+        // wait for all nodes to finish 
+        ct->arrive_control_barrier(cn - c0 + 1); 
 
         // each node has a cache 
         auto cache = std::make_shared<GAMcache>(id, dirptr); 
