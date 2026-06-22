@@ -26,9 +26,9 @@ class GAMcache {
     uint64_t thisID; 
 
     // acquire lock on data entry 
-    remus::rdma_ptr<uint64_t> acquire(remus::rdma_ptr<DataEntry> dataptr, CT &ct) {
+    remus::rdma_ptr<uint64_t> acquire(remus::rdma_ptr<DirEntry> direntry, CT &ct) {
         // build lock ptr 
-        remus::rdma_ptr<uint64_t> lockptr(dataptr.raw()+offsetof(DataEntry, lock)); 
+        remus::rdma_ptr<uint64_t> lockptr(direntry.raw() + offsetof(DirEntry, lock)); 
         while (true) {  // loop to keep trying (spin lock) 
             //if (lockptr.compare_exchange_weak(0, 1, ct)) {        // ~ equivalent to tas
             if (ct->CompareAndSwap(lockptr, (uint64_t)0, (uint64_t)1)) {
@@ -43,29 +43,12 @@ class GAMcache {
         ct->Write(lockptr, (uint64_t)0); 
     }
 
-    // for random eviction 
-    std::mt19937 gen{std::random_device{}()};
-
-    // random cache eviction 
-    void evict() {
-        if (cache.empty() || cache.size() <= 0) {
-            return; 
-        }
-        
-        // generate random index 
-        std::uniform_int_distribution<> dist(0, cache.size() - 1); 
-        size_t steps = dist(gen); 
-        auto itr = cache.begin(); 
-        std::advance(itr, steps); 
-
-        cache.erase(itr); 
-    }
-
 public: 
 
     GAMcache(uint64_t nodeID, remus::rdma_ptr<Directory> dir) 
         : dirptr(dir), thisID(nodeID) {}
-    
+
+/*
     uint64_t read(uint64_t key, CT &ct) {
         // to shut compiler up about thisid 
         if (thisID == 1000000) { return 0; }
@@ -171,5 +154,6 @@ public:
 
         xlock.unlock(); 
     }
+*/
       
 };
