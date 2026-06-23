@@ -70,7 +70,6 @@ int main (int argc, char **argv) {
         // create ComputeThread contexts
         std::vector<std::shared_ptr<remus::ComputeThread>> compute_threads; 
         uint64_t total_threads = (cn - c0 + 1) * args->uget(remus::CN_THREADS); 
-        // std::cout << "just so that total_threads is used " << total_threads << std::endl; 
         for (uint64_t i = 0; i < args->uget(remus::CN_THREADS); ++i) {
             compute_threads.push_back(std::make_shared<remus::ComputeThread>(id, compute_node, args)); 
         }
@@ -93,8 +92,10 @@ int main (int argc, char **argv) {
                 // DirEntry d{}; 
                 // d.key = i; 
                 // ct->Write(dir.entries[i], d); 
+                // dir.entries[i].key = i; 
+                // dir.entries[i].init(ct); 
+
                 dir.entries[i].key = i; 
-                dir.entries[i].init(ct); 
             }
 
             ct->Write(dirptr, dir); 
@@ -113,7 +114,7 @@ int main (int argc, char **argv) {
         uint64_t numCN = cn - c0 + 1; 
         for (uint64_t i = 0; i < ENTRIES; i++) {
             // only allocate if this should be the home node 
-            if (i % numCN == (id - c0)) {           // so only if the value == this id    
+            if (i % numCN == (id - c0)) {           // so only if the value == this id  
                 // allocate the entry on this node's memory 
                 remus::rdma_ptr<DataEntry> dataptr = ct->allocate<DataEntry>(); 
 
@@ -168,15 +169,13 @@ int main (int argc, char **argv) {
                     std::uniform_int_distribution<> dist2(0, 1);
                     std::mt19937 gen(std::random_device{}());
 
-                    // std::cout << "about to start work" << std::endl; 
-
                     // get starting time before thread does any work 
                     std::chrono::high_resolution_clock::time_point start_thr = std::chrono::high_resolution_clock::now(); 
                     ct->arrive_control_barrier(total_threads);
 
                     // each thread workload
-                    uint64_t num_reads = 0; 
-                    uint64_t read_ops = OPS * (READS/100); 
+                    uint64_t num_reads = 0;  
+                    uint64_t read_ops = OPS * (READS/100.0); 
                     for (uint64_t k = 0; k < OPS; k++) {
                         uint64_t op = dist2(gen); 
                         if (op == 0 && num_reads < read_ops) {
@@ -185,6 +184,7 @@ int main (int argc, char **argv) {
                             uint64_t val = cache->read(readid, ct); 
                             file << "read key " << readid << ", val " << val << std::endl; 
                         } else {
+                            // std::cout << "in write" << std::endl;
                             uint64_t readid = dist(gen); 
                             cache->write(readid, dist(gen)*10, ct); 
                             uint64_t val3 = cache->read(readid, ct); 
@@ -199,8 +199,6 @@ int main (int argc, char **argv) {
                     auto end_thread = std::chrono::high_resolution_clock::now(); 
                     auto dur = std::chrono::duration_cast<std::chrono::microseconds>(end_thread - start_thr).count(); 
                     std::cout << dur << std::endl; 
-
-                    // std::cout << "past barrier 1, going to construct gamcache" << std::endl; 
 
                     // first thread of each node will read the root, construct the cache 
                   },

@@ -47,6 +47,32 @@ public:
 
     GAMcache(uint64_t nodeID, remus::rdma_ptr<Directory> dir) 
         : dirptr(dir), thisID(nodeID) {}
+    
+    uint64_t read(uint64_t key, CT &ct) {
+        // to shut compiler up about thisid 
+        if (thisID == 1000000) { return 0; }
+
+        // not including cache YET
+
+        // get the ptr to entries[key] DirEntry
+        //      **i don't think i can do pointer arith. if keys weren't sequential and constant? 
+        remus::rdma_ptr<DirEntry> direntryptr (dirptr.raw() + offsetof(Directory, entries) + key*sizeof(DirEntry));
+
+        // // read directory to find data addr
+        // Directory dir = ct->Read(dirptr); 
+        // dataptr = dir.entries[key].ptr; 
+
+        // lock the DirEntry 
+        auto lockptr = acquire(direntryptr, ct);         // need to get direntryptr
+        DirEntry entry = ct->Read(direntryptr);          // get ptr and version with the lock 
+        DataEntry data = ct->Read(entry.ptr);            // get data value
+
+        // release lock 
+        release(lockptr, ct);
+
+        // return the data
+        return data.value; 
+    }
 
 /*
     uint64_t read(uint64_t key, CT &ct) {
@@ -116,7 +142,34 @@ public:
 
         return data.value; 
     }
+*/
 
+void write(uint64_t key, uint64_t val, CT &ct) {
+    // not including cache YET
+
+    // get the ptr to entries[key] DirEntry
+    remus::rdma_ptr<DirEntry> direntryptr (dirptr.raw() + offsetof(Directory, entries) + key*sizeof(DirEntry));
+
+    // lock DirEntry 
+    auto lockptr = acquire(direntryptr, ct); 
+
+    // read the DirEntry 
+    DirEntry entry = ct->Read(direntryptr); 
+
+    // make a new DataEntry 
+    DataEntry d{}; 
+    d.value = val; 
+    ct->Write(entry.ptr, d); 
+
+    // update versioning number in DirEntry
+    entry.version++; 
+    ct->Write(direntryptr, entry); 
+
+    // release lock 
+    release(lockptr, ct);
+}
+
+/*
     void write(uint64_t key, uint64_t val, CT &ct) {
         // data addr 
         remus::rdma_ptr<DataEntry> dataptr; 
