@@ -14,16 +14,22 @@ using CT = std::shared_ptr<remus::ComputeThread>;
 class GAMcache {
 
     // local cache 
-    std::unordered_map<uint64_t, CacheLine> cache; 
+    // std::unordered_map<uint64_t, CacheLine> cache; 
+    std::array<Bucket, CACHE_SIZE> cache; 
 
     // mtx lock on cache
-    std::shared_mutex mtxlock; 
+    // std::shared_mutex mtxlock; 
 
     // ptr to the directory on MN0
     remus::rdma_ptr<Directory> dirptr; 
 
     // this node 
     uint64_t thisID; 
+
+    // find the bucket for the key 
+    Bucket& getbucket(uint64_t key) {
+        return cache[key % CACHE_SIZE]; 
+    }
 
     // acquire lock on data entry 
     remus::rdma_ptr<uint64_t> acquire(remus::rdma_ptr<DirEntry> direntry, CT &ct) {
@@ -52,11 +58,42 @@ public:
         // to shut compiler up about thisid 
         if (thisID == 1000000) { return 0; }
 
-        // not including cache YET
+        // get cache bucket
+        Bucket &buc = getbucket(key);
 
         // get the ptr to entries[key] DirEntry
         //      **i don't think i can do pointer arith. if keys weren't sequential and constant? 
         remus::rdma_ptr<DirEntry> direntryptr (dirptr.raw() + offsetof(Directory, entries) + key*sizeof(DirEntry));
+
+        // first need to check if cached 
+        
+        // get shared lock on bucket 
+        std::shared_lock<std::shared_mutex> slock(buc.mtxlock);
+
+        // find if entry exists
+        auto itr = buc.entries.find(key);
+        if (itr != buc.entries.end() && itr->second.flag != INVALID) {
+            // check versioning number -- extra rdma read on each read 
+            DirEntry check = ct->Read(direntryptr); 
+            if (check.version == itr->second.version) {
+                // if versioning number matches 
+                return itr->second.data[0]; 
+            }
+        }
+
+        // else not cached -- release shared lock and acquire writer's lock 
+        slock.unlock(); 
+        std::unique_lock<std::shared_mutex> xlock(buc.mtxlock); 
+        
+        // check cache one more time to ensure another thread / node didn't cache while waiting for xlock 
+        auto itr_check = buc.entries.find(key); 
+        if (itr_check != buc.entries.end() && itr_check->second.flag != INVALID) {
+            return itr_check->second.data[0]; 
+        }
+
+        // get the ptr to entries[key] DirEntry
+        //      **i don't think i can do pointer arith. if keys weren't sequential and constant? 
+        // remus::rdma_ptr<DirEntry> direntryptr (dirptr.raw() + offsetof(Directory, entries) + key*sizeof(DirEntry));
 
         // // read directory to find data addr
         // Directory dir = ct->Read(dirptr); 
@@ -70,95 +107,57 @@ public:
         // release lock 
         release(lockptr, ct);
 
+        // cache the entry 
+        CacheLine cline{}; 
+        cline.flag = SHARED; 
+        cline.data[0] = data.value; 
+        cline.ptr = entry.ptr; 
+        cline.version = entry.version; 
+
+        // add to bucket 
+        buc.entries[key] = cline; 
+
+        // release xlock 
+        xlock.unlock(); 
+
         // return the data
         return data.value; 
     }
 
-/*
-    uint64_t read(uint64_t key, CT &ct) {
-        // to shut compiler up about thisid 
-        if (thisID == 1000000) { return 0; }
-
-        // data addr 
-        remus::rdma_ptr<DataEntry> dataptr; 
-
-        // acquire reader's lock 
-        std::shared_lock<std::shared_mutex> slock(mtxlock);
-        // first check if already in local cache 
-        auto itr = cache.find(key); 
-        // if exists, use the stored addr 
-        //if (itr != cache.end() && itr->second.flag != INVALID) {
-        if (itr != cache.end()) {
-            dataptr = itr->second.ptr; 
-            if (itr->second.flag != INVALID) {
-                // check that it's the most up-to-date version (versioning values match)
-                DataEntry check = ct->Read(dataptr);
-                if (check.version  == itr->second.version) {
-                    // if versioning matches, return the cached data 
-                    return itr->second.data[0]; 
-                } // else, continue 
-                //std::cout << "versioning mismatch, recache key " << key << std::endl; 
-            }
-        } 
-
-        // else if not cached: 
-
-        // need to release read lock and grab write lock 
-        slock.unlock(); 
-        std::unique_lock<std::shared_mutex> xlock(mtxlock);
-
-        // read directory to find data addr         (first memory node) 
-        if (itr == cache.end()) {
-            Directory dir = ct->Read(dirptr); 
-            dataptr = dir.entries[key].ptr; 
-        }
-
-        // acquire lock on DataEntry 
-        remus::rdma_ptr<uint64_t> lockptr = acquire(dataptr, ct);
-
-        // read the actual data                     (second memory node)
-        DataEntry data = ct->Read(dataptr); 
-
-        // release the lock 
-        release(lockptr, ct); 
-
-        // cache it locally 
-        CacheLine cline{}; 
-
-        cline.flag = SHARED; 
-        cline.data[0] = data.value; 
-        cline.ptr = dataptr; 
-        cline.version = data.version;
-
-        // evict random from cache if needed
-        if (cache.size() >= CACHE_SIZE) {
-            evict(); 
-        }
-
-        // then can safely cache it
-        cache[key] = cline; 
-
-        xlock.unlock(); 
-
-        return data.value; 
-    }
-*/
-
 void write(uint64_t key, uint64_t val, CT &ct) {
-    // not including cache YET
+    // get cache bucket
+    Bucket &buc = getbucket(key);
+
+    // get xlock on cache
+    std::unique_lock<std::shared_mutex> xlock(buc.mtxlock);
+
+    // look for key in cache 
+    auto itr = buc.entries.find(key); 
+    if (itr != buc.entries.end()) {
+        // if cached, invalid 
+        itr->second.flag = INVALID; 
+    } 
+
+    // release xlock 
+    xlock.unlock();         // this isn't a safe idea bc if error thrown above, will never unlock 
 
     // get the ptr to entries[key] DirEntry
     remus::rdma_ptr<DirEntry> direntryptr (dirptr.raw() + offsetof(Directory, entries) + key*sizeof(DirEntry));
-
+        // could also read this from cache, but why do two things 
+    
     // lock DirEntry 
     auto lockptr = acquire(direntryptr, ct); 
+
+    // make a new DataEntry 
+    DataEntry d{}; 
+    d.value = val; 
 
     // read the DirEntry 
     DirEntry entry = ct->Read(direntryptr); 
 
     // make a new DataEntry 
-    DataEntry d{}; 
-    d.value = val; 
+    // DataEntry d{}; 
+    // d.value = val; 
     ct->Write(entry.ptr, d); 
 
     // update versioning number in DirEntry
@@ -167,46 +166,6 @@ void write(uint64_t key, uint64_t val, CT &ct) {
 
     // release lock 
     release(lockptr, ct);
-}
-
-/*
-    void write(uint64_t key, uint64_t val, CT &ct) {
-        // data addr 
-        remus::rdma_ptr<DataEntry> dataptr; 
-        // get xlock 
-        std::unique_lock<std::shared_mutex> xlock(mtxlock);
-        // check if already in local cache 
-        auto itr = cache.find(key); 
-        // if exists, use the stored addr 
-        //if (itr != cache.end() && itr->second.flag != INVALID) {
-        if (itr != cache.end()) {  // invalid flag shouldn't matter for addr -- just to save on rdma reads
-            dataptr = itr->second.ptr; 
-        } else {
-        // else fetch the addr 
-            Directory dir = ct->Read(dirptr); 
-            dataptr = dir.entries[key].ptr; 
-        }
-
-        // acquire lock 
-        remus::rdma_ptr<uint64_t> lockptr = acquire(dataptr, ct); 
-
-        // update the version count 
-        auto base = dataptr.raw(); 
-        ct->FetchAndAdd(rdma_ptr<uint64_t>(base+offsetof(DataEntry, version)), 1);
-
-        // write new value only to value to not overwrite version 
-        ct->Write(remus::rdma_ptr<uint64_t>(base+offsetof(DataEntry, value)), val); 
-
-        // release the lock
-        release(lockptr, ct); 
-
-        // invalidate local cache entry (if exists)
-        if (itr != cache.end()) {
-            itr->second.flag = INVALID; 
-        }
-
-        xlock.unlock(); 
     }
-*/
-      
+
 };

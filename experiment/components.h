@@ -2,6 +2,7 @@
 
 #include <mutex>
 #include <atomic> 
+// #include <vector>
 
 #include <remus/remus.h>
 
@@ -10,10 +11,10 @@ using CT = std::shared_ptr<remus::ComputeThread>;
 
 
 // constants
-static constexpr uint64_t ENTRIES = 128; 
+static constexpr uint64_t ENTRIES = 1024; 
 static constexpr uint64_t OPS = 20000;
 static constexpr uint64_t READS = 50;
-static constexpr uint64_t CACHE_SIZE = 64;
+static constexpr uint64_t CACHE_SIZE = 1024;
 // static constexpr uint64_t NUM_QUEUES = 4; 
 
 // possible states 
@@ -45,6 +46,7 @@ struct DirEntry {
 // directory -- array of DirEntry instances, allocated on (arbitrarily) on MN0 
 struct Directory {
     DirEntry entries[ENTRIES]; 
+    // std::vector<DirEntry> entries{ENTRIES};
 };
 
 // cache line entry (exist on remote nodes) 
@@ -53,4 +55,10 @@ struct CacheLine {
     uint64_t data[64];                  // cached data 
     remus::rdma_ptr<DataEntry> ptr;     // physical addr of data 
     uint64_t version;                   // cached versioning number 
+};
+
+// bucket for cache hash table 
+struct Bucket {
+    std::unordered_map<uint64_t, CacheLine> entries; 
+    std::shared_mutex mtxlock;          // bucket-grain lock 
 };
