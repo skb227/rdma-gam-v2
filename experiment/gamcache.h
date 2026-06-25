@@ -5,6 +5,7 @@
 #include <shared_mutex>
 #include <unistd.h>
 #include <random> 
+// #include <vector>
 
 #include <remus/remus.h>
 #include "components.h"
@@ -16,6 +17,7 @@ class GAMcache {
     // local cache 
     // std::unordered_map<uint64_t, CacheLine> cache; 
     std::array<Bucket, CACHE_SIZE> cache; 
+    // std::vector<Bucket> cache{CACHE_SIZE};
 
     // mtx lock on cache
     // std::shared_mutex mtxlock; 
