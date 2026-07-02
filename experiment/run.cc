@@ -160,7 +160,7 @@ int main (int argc, char **argv) {
                     ct->arrive_control_barrier(total_threads);
 
                     // each thread makes its own file 
-                    std::ofstream file("thread" + std::to_string(i) + ".txt", std::ios::out); 
+                    // std::ofstream file("thread" + std::to_string(i) + ".txt", std::ios::out); 
                     // and then wait 
                     ct->arrive_control_barrier(total_threads);
 
@@ -180,15 +180,17 @@ int main (int argc, char **argv) {
                         uint64_t op = dist2(gen); 
                         if (op == 0 && num_reads < read_ops) {
                             num_reads++;
-                            uint64_t readid = dist(gen); 
-                            uint64_t val = cache->read(readid, ct); 
-                            file << "read key " << readid << ", val " << val << std::endl; 
-                        } else {
+                            // uint64_t readid = dist(gen); 
+                            // uint64_t val = cache->read(readid, ct); 
+                            cache->read(dist(gen), ct); 
+                            // file << "read key " << readid << ", val " << val << std::endl; 
+                        } else if (READS != 100) {
                             // std::cout << "in write" << std::endl;
-                            uint64_t readid = dist(gen); 
-                            cache->write(readid, dist(gen)*10, ct); 
-                            uint64_t val3 = cache->read(readid, ct); 
-                            file << "write, read key " << readid << ", val " << val3 << std::endl; 
+                            // uint64_t readid = dist(gen); 
+                            cache->write(dist(gen), dist(gen)*10, ct); 
+                            // uint64_t val3 = cache->read(readid, ct); 
+                            // cache->read(readid, ct);
+                            // file << "write, read key " << readid << ", val " << val3 << std::endl; 
                         }
                     }
 
@@ -198,7 +200,14 @@ int main (int argc, char **argv) {
                     // get ending time
                     auto end_thread = std::chrono::high_resolution_clock::now(); 
                     auto dur = std::chrono::duration_cast<std::chrono::microseconds>(end_thread - start_thr).count(); 
-                    std::cout << dur << std::endl; 
+
+                    // write to file rather than stdout 
+                    std::string filename = "node" + std::to_string(id) + ".txt";
+                    std::ofstream res_file(filename); 
+                    res_file << "DUR_US:" << dur << std::endl; 
+                    res_file.close(); 
+
+                    // std::cout << "DUR_US:" << dur << std::endl; 
 
                     // first thread of each node will read the root, construct the cache 
                   },

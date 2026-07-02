@@ -64,7 +64,7 @@ public:
         Bucket &buc = getbucket(key);
 
         // get the ptr to entries[key] DirEntry
-        //      **i don't think i can do pointer arith. if keys weren't sequential and constant? 
+        //      **i don't think i can do pointer arith if keys weren't sequential and constant? 
         remus::rdma_ptr<DirEntry> direntryptr (dirptr.raw() + offsetof(Directory, entries) + key*sizeof(DirEntry));
 
         // first need to check if cached 
@@ -76,20 +76,30 @@ public:
         auto itr = buc.entries.find(key);
         if (itr != buc.entries.end() && itr->second.flag != INVALID) {
             // check versioning number -- extra rdma read on each read 
-            DirEntry check = ct->Read(direntryptr); 
-            if (check.version == itr->second.version) {
+            remus::rdma_ptr<uint64_t> versionptr (direntryptr.raw() + offsetof(DirEntry, version));
+            uint64_t check = ct->Read(versionptr); 
+            if (check == itr->second.version) {
                 // if versioning number matches 
                 return itr->second.data[0]; 
             }
+            // // check versioning number -- extra rdma read on each read 
+            // DirEntry check = ct->Read(direntryptr); 
+            // if (check.version == itr->second.version) {
+            //     // if versioning number matches 
+            //     return itr->second.data[0]; 
+            // }
         }
 
-        // else not cached -- release shared lock and acquire writer's lock 
+        // else not cached -- release shared lock
         slock.unlock(); 
+        
+        // get xlock on cache to enter entry 
         std::unique_lock<std::shared_mutex> xlock(buc.mtxlock); 
         
         // check cache one more time to ensure another thread / node didn't cache while waiting for xlock 
         auto itr_check = buc.entries.find(key); 
         if (itr_check != buc.entries.end() && itr_check->second.flag != INVALID) {
+            xlock.unlock();
             return itr_check->second.data[0]; 
         }
 
