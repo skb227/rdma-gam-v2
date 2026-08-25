@@ -11,10 +11,10 @@ using CT = std::shared_ptr<remus::ComputeThread>;
 
 
 // constants
-static constexpr uint64_t ENTRIES = 16; 
+static constexpr uint64_t ENTRIES = 16;
 static constexpr uint64_t OPS = 20000;
-static constexpr uint64_t READS = 50;
-static constexpr uint64_t CACHE_SIZE = 16;
+// static constexpr uint64_t READS = 100;
+static constexpr uint64_t CACHE_SIZE = ENTRIES;
 // static constexpr uint64_t NUM_QUEUES = 4; 
 
 // possible states 
@@ -28,17 +28,21 @@ enum State {
 // data entry -- stored (arbitrarily) on MN1
 struct DataEntry {
     uint64_t value;                         // data value 
+    uint64_t version; 
+    uint64_t padding[6];                    // 8 bytes for uint64_t value, 48 (6*8) padding to make 64 bytes total
 };
 
 // directory entry -- stored (arbitrarily) on MN0
 struct DirEntry {
     uint64_t key;                           // entry's id 
     remus::rdma_ptr<DataEntry> ptr;         // physical addr of data 
-    uint64_t version;                       // versioning number
+    // uint64_t version;                       // versioning number
+    // remus::Atomic<uint64_t> version;     // atomic versioning number
     remus::Atomic<uint64_t> lock;           // lock on data entry 
+    uint64_t padding[5];                    // 8 bytes for each field, 40 padding (5*8) to make 64 bytes total
 
     void init (CT &ct) {
-        version = 0; 
+        // version = 0; 
         lock.store(0, ct); 
     }
 };
@@ -61,4 +65,21 @@ struct CacheLine {
 struct Bucket {
     std::unordered_map<uint64_t, CacheLine> entries; 
     std::shared_mutex mtxlock;          // bucket-grain lock 
+};
+
+
+
+// metrics
+struct Metrics {
+    uint64_t cas = 0; 
+    uint64_t read = 0; 
+    uint64_t write = 0; 
+    uint64_t op_cnt = 0; 
+    uint64_t read_cnt = 0; 
+    uint64_t write_cnt = 0; 
+
+    void report(uint64_t node, uint64_t thread) {
+        std::cout << "node " << node << " t" << thread << 
+                 "\nops: " << op_cnt << "\ncas: " << (op_cnt ? cas / op_cnt : 0) << "\nread: " << (op_cnt ? read / op_cnt : 0) << "\nwrite: " << (op_cnt ? write / op_cnt : 0) << "\n read ops: " << read_cnt << "\nwrite ops: " << write_cnt << std::endl; 
+    }
 };
