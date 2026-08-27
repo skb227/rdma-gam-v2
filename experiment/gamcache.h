@@ -12,13 +12,6 @@
 
 using CT = std::shared_ptr<remus::ComputeThread>; 
 
-// #define TIME_US(expr, accumulator) { \
-//     auto _t0 = std::chrono::high_resolution_clock::now(); \
-//     expr; \
-//     auto _t1 = std::chrono::high_resolution_clock::now(); \
-//     accumulator += std::chrono::duration_cast<std::chrono::microseconds>(_t1-_t0).count(); \
-// }
-
 class GAMcache {
 
     // ptr to the directory on MN0
@@ -30,8 +23,12 @@ class GAMcache {
     // local cache
     std::vector<Bucket> cache{CACHE_SIZE};
 
+    // invalidation table  -- for now, a vector where index matches key 
+    remus::rdma_ptr<InvTable> invtab; 
+    std::unordered_map<uint64_t, remus::rdma_ptr<InvTable>> invmap; 
+
     // acquire lock on data entry 
-    remus::rdma_ptr<uint64_t> acquire(remus::rdma_ptr<DirEntry> direntry, CT &ct) {//, std::atomic<uint64_t> &cas_fails) {
+    remus::rdma_ptr<uint64_t> acquire(remus::rdma_ptr<DirEntry> direntry, CT &ct) {      //, std::atomic<uint64_t> &cas_fails) {
         // build lock ptr 
         remus::rdma_ptr<uint64_t> lockptr(direntry.raw() + offsetof(DirEntry, lock)); 
         while (true) {  // loop to keep trying (spin lock) 
@@ -61,8 +58,8 @@ class GAMcache {
 
 public: 
 
-    GAMcache(uint64_t nodeID, remus::rdma_ptr<DirEntry> dir) 
-        : dirptr(dir), thisID(nodeID) {}
+    GAMcache(uint64_t nodeID, remus::rdma_ptr<DirEntry> dir, remus::rdma_ptr<InvTable> invtable, std::unordered_map<uint64_t, remus::rdma_ptr<InvTable>> invmap) 
+        : dirptr(dir), thisID(nodeID), invtab(invtable), invmap(invmap) {}
 
     // uint64_t read(uint64_t key, CT &ct, Metrics &m) {
     uint64_t read(uint64_t key, CT &ct) { 
@@ -75,6 +72,7 @@ public:
         // get the ptr to entries[key] DirEntry
         remus::rdma_ptr<DirEntry> direntryptr = dirptr + key;
 
+        uint64_t invalbit = 1; 
 
         // first check if key is cached 
 
@@ -83,38 +81,41 @@ public:
 
         // check if entry exists in bucket
         auto itr = buc.entries.find(key);
+        if (itr != buc.entries.end()) {
+            remus::rdma_ptr<uint64_t> invbitptr (invtab.raw() + offsetof(InvTable, invbits) + key*sizeof(uint64_t));
+            if (itr->second.flag == INVALID) {
+                ct->CompareAndSwap(invbitptr, (uint64_t)1, (uint64_t)0);
+            } else {
+                uint64_t invbit = ct->CompareAndSwap(invbitptr, (uint64_t)1, (uint64_t)0);
+
+                if (invbit == 0) {
+                    slock.unlock(); 
+                    return itr->second.data[0]; 
+                }
+            }
+        }
+        /*
         if (itr != buc.entries.end() && itr->second.flag != INVALID) {
-            // check VN of cached data to ensure cache correctness coherence (across nodes) 
+            // consider CAS when invalid as well, so split up the first if and if invalid still do cas 
 
-            // with atomic vn 
-            remus::rdma_ptr<DataEntry> dataptr = itr->second.ptr; 
-            remus::rdma_ptr<uint64_t> versionptr (dataptr.raw() + offsetof(DataEntry, version)); 
-            uint64_t check = ct->Read(versionptr); 
-            // is this correct? an atomic read without a lock would interrupt something holding the lock, but it wouldn't be able to access the vn if the writer was in the process of writing to the vn
-            // and the vn is written before the value, so technically it'd be out of order... 
-            // otherwise i could do like idk maybe two updates on vn during write so first one makes it odd meaning write in progress, so if read finds odd vn knows it is in process of writing and if even 
-            //    no write is currently occurring but still have to check match 
-            // but again that doesn't necessarily mean that there isn't another write, like a writer could obtain the lock, a reader checks the vn and finds it hasn't changed, and then the writer increments
-            //    the vn, so technically out of order 
-            // could also just go back to locks... 
 
-            /*
-            auto lockptr = acquire(direntryptr, ct);
-            remus::rdma_ptr<DataEntry> dataptr = itr->second.ptr; 
-            remus::rdma_ptr<uint64_t> versionptr (dataptr.raw() + offsetof(DataEntry, version));
-            uint64_t check = ct->Read(versionptr); 
-            release(lockptr, ct);
-            */
 
-            if (check == itr->second.version) {
-                // if versioning number matches 
+            // check invalidation table 
+            remus::rdma_ptr<uint64_t> invbitptr (invtab.raw() + offsetof(InvTable, invbits) + key*sizeof(uint64_t));
+            invalbit = ct->CompareAndSwap(invbitptr, (uint64_t)1, (uint64_t)0); 
+
+            // if cas result is 0 -- still valid, use cached data
+            if (invalbit == 0) {
+                slock.unlock();
                 return itr->second.data[0]; 
             }
-            
-            // else -- vn doesn't match -- continue 
+
+            // else if cas result is 1 -- invalid, need to read from directory 
+            // ct->Write(invbitptr, 0); 
             
             // return itr->second.data[0]; 
         }
+        */
 
 
         // otherwise, not cached or invalid:
@@ -123,16 +124,7 @@ public:
         slock.unlock(); 
 
         // get xlock on bucket to add new entry 
-        std::unique_lock<std::shared_mutex> xlock(buc.mtxlock); 
-
-        // check cache one more time to ensure another thread / node didn't cache while waiting for xlock 
-        // auto itr_check = buc.entries.find(key); 
-        // if (itr_check != buc.entries.end() && itr_check->second.flag != INVALID) {
-        //     xlock.unlock();
-        //     return itr_check->second.data[0]; 
-        // }
-        // skipping this check for now... 
-
+        std::unique_lock<std::shared_mutex> xlock(buc.mtxlock);
         
         // lock the DirEntry
         auto lockptr = acquire(direntryptr, ct); 
@@ -141,37 +133,41 @@ public:
         remus::rdma_ptr<DataEntry> dataptr; 
 
         // if cached -- use cached data ptr (never modified) 
-        if (itr != buc.entries.end()) {
-            dataptr = itr->second.ptr; 
-        } else {
-        // no cached -- rdma read to DirEntry 
-            DirEntry entry = ct->Read(direntryptr); 
-            dataptr = entry.ptr; 
+        // if (itr != buc.entries.end()) {
+        //     dataptr = itr->second.ptr; 
+        // } else {
+        // // no cached -- rdma read to DirEntry 
+        //     DirEntry entry = ct->Read(direntryptr); 
+        //     dataptr = entry.ptr; 
+        // }
+
+        // need to read the entry for slist details anyway 
+        DirEntry entry = ct->Read(direntryptr); 
+        dataptr = entry.ptr; 
+
+        // check if this node is already registered in slist 
+        bool found = false; 
+        for (uint64_t i = 0; i < entry.slist_cnt; i++) {
+            if (entry.slist[i] == thisID) {
+                found = true; 
+                break;
+            }
+        }
+
+        // need to update slist of DirEntry (if was invalidated or never cached before)
+        if ((invalbit == 1 || itr == buc.entries.end()) && found == false) {
+            remus::rdma_ptr<uint64_t> cntptr (direntryptr.raw() + offsetof(DirEntry, slist_cnt)); 
+            uint64_t slot = ct->FetchAndAdd(cntptr, 1);     // update slist_cnt
+            // if (slot < 2) { -- 
+                remus::rdma_ptr<uint64_t> slistptr (direntryptr.raw() + offsetof(DirEntry, slist) + slot*sizeof(uint64_t)); 
+                ct->Write(slistptr, thisID);
         }
 
         // read the new data entry 
-        DataEntry data = ct->Read(dataptr); 
-        
-/*
-        // lock the DirEntry 
-        auto lockptr = acquire(direntryptr, ct);         // need to get direntryptr
-                        // remus::rdma_ptr<uint64_t> lockptr(direntryptr.raw() + offsetof(DirEntry, lock)); 
-                        // TIME_US(ct->CompareAndSwap(lockptr, (uint64_t)0, (uint64_t)1), m.cas);  
-        DirEntry entry = ct->Read(direntryptr);          // get ptr and version with the lock 
-                        // DirEntry entry; 
-                        // TIME_US(entry = ct->Read(direntryptr), m.read); 
-        DataEntry data = ct->Read(entry.ptr);            // get data value
-                        // DataEntry data; 
-                        // TIME_US(data = ct->Read(entry.ptr), m.read); 
-      */  
-        
+        DataEntry data = ct->Read(dataptr);  
 
         // release lock 
         release(lockptr, ct);
-                        // TIME_US(ct->Write(lockptr, (uint64_t)0), m.write); 
-
-                        // m.op_cnt++;
-                        // m.read_cnt++; 
 
         // cache the entry 
         CacheLine cline{}; 
@@ -179,7 +175,6 @@ public:
         cline.data[0] = data.value; 
         // cline.ptr = entry.ptr; 
         cline.ptr = dataptr; 
-        cline.version = data.version; 
 
         // add to bucket 
         buc.entries[key] = cline; 
@@ -205,10 +200,10 @@ void write(uint64_t key, uint64_t val, CT &ct) {
     auto itr = buc.entries.find(key);
     if (itr != buc.entries.end()) {
         // if cached, invalidate        -- IOW
-        // itr->second.flag = INVALID; 
+        itr->second.flag = INVALID; 
 
         // if cached, update cache      -- UOW
-        itr->second.data[0] = val;
+        // itr->second.data[0] = val;
     }
 
     // get the ptr to entries[key] DirEntry
@@ -222,49 +217,46 @@ void write(uint64_t key, uint64_t val, CT &ct) {
 
     // if cached -- use cached data ptr (never modified) 
     
-    if (itr != buc.entries.end()) {
-        dataptr = itr->second.ptr; 
-    } else {
-    // not cached -- rdma read to DirEntry 
-        DirEntry entry = ct->Read(direntryptr); 
-        dataptr = entry.ptr; 
+    // if (itr != buc.entries.end()) {
+    //     dataptr = itr->second.ptr; 
+    // } else {
+    // // not cached -- rdma read to DirEntry 
+    //     DirEntry entry = ct->Read(direntryptr); 
+    //     dataptr = entry.ptr; 
+    // }
 
-        // make new (invalid) cache entry to store data entry pointer 
-        // CacheLine cline{}; 
-        // cline.flag = INVALID; 
-        // cline.ptr = entry.ptr; 
-        // cline.version = entry.version; 
-        // buc.entries[key] = cline; 
-    }
-
-    // DirEntry entry = ct->Read(direntryptr);
-    // dataptr = entry.ptr; 
-
+    // read direntry to get (updated) slist
+    DirEntry entry = ct->Read(direntryptr); 
+    dataptr = entry.ptr; 
+    uint64_t cnt = entry.slist_cnt; 
+    
     // release lock on cache
     xlock.unlock();  
 
-    // using atomic versioning
-    remus::rdma_ptr<uint64_t> verptr(dataptr.raw() + offsetof(DataEntry, version)); 
-    remus::rdma_ptr<uint64_t> valptr(dataptr.raw() + offsetof(DataEntry, value)); 
+    // invalidate each sharing node's inval bit for this key 
+    remus::rdma_ptr<uint64_t> cntptr (direntryptr.raw() + offsetof(DirEntry, slist_cnt));
+    for (uint64_t i = 0; i < cnt; i++) {
+        uint64_t s_node = entry.slist[i]; 
+        // if (s_node == thisID) continue; 
 
-    // FAA atomic incerment for VN 
-    ct->FetchAndAdd(verptr, 1); 
+        auto itr = invmap.find(s_node); 
+        if (itr == invmap.end()) continue; 
+
+        // else write inv bit to 1 
+        remus::rdma_ptr<uint64_t> remote_bitptr (itr->second.raw() + offsetof(InvTable, invbits) + key * sizeof(remus::Atomic<uint64_t>)); 
+        ct->Write(remote_bitptr, (uint64_t)1); 
+    }
+
+    // and then clear the slist cnt
+    ct->Write(cntptr, (uint64_t)0); 
+
+    // rdma addr for value 
+    remus::rdma_ptr<uint64_t> valptr(dataptr.raw() + offsetof(DataEntry, value)); 
 
     // write new value
     ct->Write(valptr, val); 
-    
-    /*
-    // make a new DataEntry 
-    DataEntry d{}; 
-    d.value = val; 
 
-    // update versioning number
-    DataEntry old = ct->Read(dataptr);
-    d.version = old.version + 1; 
-
-    // write the new DataEntry 
-    ct->Write(dataptr, d); 
-    */
+    // invalidate caches on nodes that have previously read (cached) the key 
 
     // release lock 
     release(lockptr, ct);       

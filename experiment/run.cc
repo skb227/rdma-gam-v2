@@ -79,6 +79,8 @@ int main (int argc, char **argv) {
 
         // rdma ptr to directory
         remus::rdma_ptr<DirEntry> dirptr; 
+        // rdma ptr to invalidation table array 
+        remus::rdma_ptr<remus::rdma_ptr<InvTable>> invarr; 
 
         // (prefill data structure) -- CN 0 constructs the data structure (directory) and save it in root
         if (id == c0) {
@@ -94,23 +96,42 @@ int main (int argc, char **argv) {
             for (uint64_t i = 0; i < ENTRIES; i++) {
                 // make a new dir entry object, set its key to i 
                 DirEntry d{}; 
-                d.key = i;  
+                d.key = i; 
+                d.slist_cnt = 0; 
 
                 // let remus do pointer arith 
                 ct->Write(dirptr+i, d);
             }
 
             // set directory as the root 
-            ct->set_root(dirptr); 
+            // ct->set_root(dirptr); 
+
+
+            // and set the root invalidation table array
+            invarr = ct->allocate<remus::rdma_ptr<InvTable>>(cn - c0 + 1);
+
+            // set Boot as the root 
+            remus::rdma_ptr<Boot> boot = ct->allocate<Boot>(); 
+            Boot b{}; 
+            b.dirptr = dirptr; 
+            b.invarr = invarr; 
+            ct->Write(boot, b); 
+            ct->set_root(boot);       
+
         } 
 
-        // wait for all *nodes* to reach this barrier 
-        ct->arrive_control_barrier(cn - c0 + 1); 
+        // wait for all nodes 
+        ct->arrive_control_barrier(cn - c0 + 1);
 
-        // each node reads dirptr 
-        dirptr = ct->get_root<DirEntry>();
+        // each node gets the root 
+        auto boot = ct->get_root<Boot>(); 
+        Boot b = ct->Read(boot);
+        dirptr = b.dirptr; 
+        invarr = b.invarr; 
 
-        // then each node creates its own data 
+        ct->arrive_control_barrier(cn-c0+1);
+
+        // each nodes creates its own data 
         uint64_t numCN = cn - c0 + 1; 
         for (uint64_t i = 0; i < ENTRIES; i++) {
             // only allocate if this should be the home node 
@@ -122,7 +143,7 @@ int main (int argc, char **argv) {
                 // write the value 
                 DataEntry d{}; 
                 d.value = (i + 1) * 10; 
-                d.version = 0; 
+                // d.version = 0; 
                 ct->Write(dataptr, d); 
                 
                 // get rdma ptr to this entry (let remus do pointer arith)
@@ -132,13 +153,33 @@ int main (int argc, char **argv) {
                 // write the DataEntry made above to that DataEntry in the DirEntry ... 
                 ct->Write(ptrfield, dataptr); 
             }
+        } 
+        
+        // each node allocates its own invalidation table
+        remus::rdma_ptr<InvTable> inval = ct->allocate<InvTable>(); 
+        InvTable thisinv{};         // zero-allocated
+        ct->Write(inval, thisinv); 
+
+        // each node writes its own invtab ptr into its slot in invalidation array 
+        remus::rdma_ptr<remus::rdma_ptr<InvTable>> this_slot(invarr.raw() + (id-c0)*sizeof(remus::rdma_ptr<InvTable>));
+        ct->Write(this_slot, inval);
+
+
+        ct->arrive_control_barrier(cn-c0+1);
+
+        // then each node reads the inv array to build its local map 
+        std::unordered_map<uint64_t, remus::rdma_ptr<InvTable>> invmap; 
+        for (uint64_t node = c0; node <= cn; node++) {
+            remus::rdma_ptr<remus::rdma_ptr<InvTable>> slot(invarr.raw() + (node - c0)*sizeof(remus::rdma_ptr<InvTable>));
+            remus::rdma_ptr<InvTable> node_inval = ct->Read(slot); 
+            invmap[node] = node_inval; 
         }
 
         // wait for all nodes to finish 
         ct->arrive_control_barrier(cn - c0 + 1); 
 
         // each node has a cache 
-        auto cache = std::make_shared<GAMcache>(id, dirptr); 
+        auto cache = std::make_shared<GAMcache>(id, dirptr, inval, invmap); 
 
         // using metrics for latency rn
         // std::vector<Metrics> metrics(args->uget(remus::CN_THREADS));
@@ -186,13 +227,12 @@ int main (int argc, char **argv) {
                     for (uint64_t k = 0; k < OPS/2; k++) {
                         // read 
                             // std::chrono::high_resolution_clock::time_point start = std::chrono::high_resolution_clock::now(); 
-                            cache->read(dist(gen), ct);
+                            // cache->read(dist(gen), ct);
                             // std::chrono::high_resolution_clock::time_point end = std::chrono::high_resolution_clock::now(); 
                             // auto time = std::chrono::duration_cast<std::chrono::microseconds>(end - start); 
                             // read_time = read_time + time; 
 
-
-                            // cache->read(dist(gen), ct, m); 
+                            cache->read(dist(gen), ct);
                             
                             // uint64_t readid = dist(gen); 
                             // uint64_t val = cache->read(readid, ct); 
@@ -200,11 +240,13 @@ int main (int argc, char **argv) {
 
                         // write 
                             // start = std::chrono::high_resolution_clock::now(); 
-                            cache->write(dist(gen), dist(gen)*10, ct); 
+                            // cache->write(dist(gen), dist(gen)*10, ct); 
                             // cache->write(dist(gen), dist(gen)*10, ct, m); 
                             // end = std::chrono::high_resolution_clock::now(); 
                             // time = std::chrono::duration_cast<std::chrono::microseconds>(end - start); 
                             // write_time = write_time + time; 
+
+                            cache->write(dist(gen), dist(gen)*10, ct);
 
                             // uint64_t writeid = dist(gen); 
                             // uint64_t val2 = dist(gen)*10;

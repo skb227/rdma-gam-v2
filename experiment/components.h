@@ -28,8 +28,7 @@ enum State {
 // data entry -- stored (arbitrarily) on MN1
 struct DataEntry {
     uint64_t value;                         // data value 
-    uint64_t version; 
-    uint64_t padding[6];                    // 8 bytes for uint64_t value, 48 (6*8) padding to make 64 bytes total
+    uint64_t padding[7];                   // 8 bytes for uint64_t value, 56 (7*8) padding to make 64 bytes total
 };
 
 // directory entry -- stored (arbitrarily) on MN0
@@ -37,9 +36,11 @@ struct DirEntry {
     uint64_t key;                           // entry's id 
     remus::rdma_ptr<DataEntry> ptr;         // physical addr of data 
     // uint64_t version;                       // versioning number
-    // remus::Atomic<uint64_t> version;     // atomic versioning number
+    // remus::Atomic<uint64_t> version;       // atomic versioning number
     remus::Atomic<uint64_t> lock;           // lock on data entry 
-    uint64_t padding[5];                    // 8 bytes for each field, 40 padding (5*8) to make 64 bytes total
+    uint64_t slist[2];                      // nodes that have cached this entry key (as of now, max 2 nodes sharing) 
+    uint64_t slist_cnt;                     // # of nodes in slist 
+    uint64_t padding[2];                   // 8 bytes for each field, 16 bytes for 2 uint64_t, 16 padding (2*8) to make 64 bytes total
 
     void init (CT &ct) {
         // version = 0; 
@@ -58,13 +59,26 @@ struct CacheLine {
     State flag;                         // state of the cache line
     uint64_t data[64];                  // cached data 
     remus::rdma_ptr<DataEntry> ptr;     // physical addr of data 
-    uint64_t version;                   // cached versioning number 
+    // uint64_t version;                   // cached versioning number 
+    uint64_t padding[5];                  // i think enum is 4 bytes, other two are 8 bytes each, so 5*8 = 40 = 60 total
 };
 
 // bucket for cache hash table 
 struct Bucket {
     std::unordered_map<uint64_t, CacheLine> entries; 
     std::shared_mutex mtxlock;          // bucket-grain lock 
+};
+
+// invalidation table 
+struct InvTable {
+    uint64_t invbits[ENTRIES];
+        // zero-initialized when declared with {}
+};
+
+// to pair for set root 
+struct Boot {
+    remus::rdma_ptr<DirEntry> dirptr; 
+    remus::rdma_ptr<remus::rdma_ptr<InvTable>> invarr; 
 };
 
 
