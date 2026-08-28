@@ -94,28 +94,6 @@ public:
                 }
             }
         }
-        /*
-        if (itr != buc.entries.end() && itr->second.flag != INVALID) {
-            // consider CAS when invalid as well, so split up the first if and if invalid still do cas 
-
-
-
-            // check invalidation table 
-            remus::rdma_ptr<uint64_t> invbitptr (invtab.raw() + offsetof(InvTable, invbits) + key*sizeof(uint64_t));
-            invalbit = ct->CompareAndSwap(invbitptr, (uint64_t)1, (uint64_t)0); 
-
-            // if cas result is 0 -- still valid, use cached data
-            if (invalbit == 0) {
-                slock.unlock();
-                return itr->second.data[0]; 
-            }
-
-            // else if cas result is 1 -- invalid, need to read from directory 
-            // ct->Write(invbitptr, 0); 
-            
-            // return itr->second.data[0]; 
-        }
-        */
 
 
         // otherwise, not cached or invalid:
@@ -155,11 +133,10 @@ public:
 
         // need to update slist of DirEntry (if was invalidated or never cached before)
         if ((invalbit == 1 || itr == buc.entries.end()) && found == false) {
-            remus::rdma_ptr<uint64_t> cntptr (dataptr.raw() + offsetof(DataEntry, slist_cnt)); 
-            uint64_t slot = ct->FetchAndAdd(cntptr, 1);     // update slist_cnt
-            // if (slot < 2) { -- 
-                remus::rdma_ptr<uint64_t> slistptr (dataptr.raw() + offsetof(DataEntry, slist) + slot*sizeof(uint64_t)); 
-                ct->Write(slistptr, thisID);
+            // update the slist_cnt and slist, then write it to dataptr at once 
+            data.slist_cnt = data.slist_cnt + 1; 
+            data.slist[data.slist_cnt] = thisID; 
+            ct->Write(dataptr, data); 
         } 
 
         // release lock 
@@ -196,10 +173,10 @@ void write(uint64_t key, uint64_t val, CT &ct) {
     auto itr = buc.entries.find(key);
     if (itr != buc.entries.end()) {
         // if cached, invalidate        -- IOW
-        itr->second.flag = INVALID; 
+        // itr->second.flag = INVALID; 
 
         // if cached, update cache      -- UOW
-        // itr->second.data[0] = val;
+        itr->second.data[0] = val;
     }
 
     // get the ptr to entries[key] DirEntry
@@ -218,7 +195,7 @@ void write(uint64_t key, uint64_t val, CT &ct) {
         dataptr = entry.ptr; 
     }
 
-    // lock DirEntry 
+    // lock DataE 
     auto lockptr = acquire(dataptr, ct); 
 
     // release lock on cache
@@ -242,13 +219,10 @@ void write(uint64_t key, uint64_t val, CT &ct) {
         ct->Write(remote_bitptr, (uint64_t)1); 
     }
 
-    DataEntry d{}; 
-
-    d.slist_cnt = 0; 
-    d.value = val; 
-    // d.lock.store(ct, 0);  -- should be handled during initalization
-
-    ct->Write(dataptr, d); 
+    // update slist_cnt and value of DataE, write it back at once 
+    data.slist_cnt = 0; 
+    data.value = val; 
+    ct->Write(dataptr, data);
 
     // and then clear the slist cnt
     // ct->Write(cntptr, (uint64_t)0); 

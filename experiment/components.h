@@ -11,7 +11,7 @@ using CT = std::shared_ptr<remus::ComputeThread>;
 
 
 // constants
-static constexpr uint64_t ENTRIES = 128;
+static constexpr uint64_t ENTRIES = 1024;
 static constexpr uint64_t OPS = 20000;
 // static constexpr uint64_t READS = 100;
 static constexpr uint64_t CACHE_SIZE = ENTRIES;
