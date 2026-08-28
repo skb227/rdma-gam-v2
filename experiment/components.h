@@ -11,7 +11,7 @@ using CT = std::shared_ptr<remus::ComputeThread>;
 
 
 // constants
-static constexpr uint64_t ENTRIES = 16;
+static constexpr uint64_t ENTRIES = 1024;
 static constexpr uint64_t OPS = 20000;
 // static constexpr uint64_t READS = 100;
 static constexpr uint64_t CACHE_SIZE = ENTRIES;
@@ -28,7 +28,9 @@ enum State {
 // data entry -- stored (arbitrarily) on MN1
 struct DataEntry {
     uint64_t value;                         // data value 
-    uint64_t padding[7];                   // 8 bytes for uint64_t value, 56 (7*8) padding to make 64 bytes total
+    uint64_t slist_cnt;                     // # of nodes in slist 
+    uint64_t slist[2];                      // nodes that have cached this entry key (as of now, max 2 nodes sharing) 
+    uint64_t padding[4];                    // 8 bytes for uint64_t value, 16 for 2 uint64_t, 8 for slist_cnt, 32 (4*8) padding to make 64 bytes total
 };
 
 // directory entry -- stored (arbitrarily) on MN0
@@ -38,9 +40,9 @@ struct DirEntry {
     // uint64_t version;                       // versioning number
     // remus::Atomic<uint64_t> version;       // atomic versioning number
     remus::Atomic<uint64_t> lock;           // lock on data entry 
-    uint64_t slist[2];                      // nodes that have cached this entry key (as of now, max 2 nodes sharing) 
-    uint64_t slist_cnt;                     // # of nodes in slist 
-    uint64_t padding[2];                   // 8 bytes for each field, 16 bytes for 2 uint64_t, 16 padding (2*8) to make 64 bytes total
+    // uint64_t slist[2];                      // nodes that have cached this entry key (as of now, max 2 nodes sharing) 
+    // uint64_t slist_cnt;                     // # of nodes in slist 
+    uint64_t padding[5];                   // 8 bytes for each field, 40 padding (5*8) to make 64 bytes total
 
     void init (CT &ct) {
         // version = 0; 

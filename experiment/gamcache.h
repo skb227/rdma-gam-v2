@@ -133,22 +133,21 @@ public:
         remus::rdma_ptr<DataEntry> dataptr; 
 
         // if cached -- use cached data ptr (never modified) 
-        // if (itr != buc.entries.end()) {
-        //     dataptr = itr->second.ptr; 
-        // } else {
-        // // no cached -- rdma read to DirEntry 
-        //     DirEntry entry = ct->Read(direntryptr); 
-        //     dataptr = entry.ptr; 
-        // }
+        if (itr != buc.entries.end()) {
+            dataptr = itr->second.ptr; 
+        } else {
+        // no cached -- rdma read to DirEntry 
+            DirEntry entry = ct->Read(direntryptr); 
+            dataptr = entry.ptr; 
+        }
 
-        // need to read the entry for slist details anyway 
-        DirEntry entry = ct->Read(direntryptr); 
-        dataptr = entry.ptr; 
+        // read the new data entry 
+        DataEntry data = ct->Read(dataptr); 
 
         // check if this node is already registered in slist 
         bool found = false; 
-        for (uint64_t i = 0; i < entry.slist_cnt; i++) {
-            if (entry.slist[i] == thisID) {
+        for (uint64_t i = 0; i < data.slist_cnt; i++) {
+            if (data.slist[i] == thisID) {
                 found = true; 
                 break;
             }
@@ -156,15 +155,12 @@ public:
 
         // need to update slist of DirEntry (if was invalidated or never cached before)
         if ((invalbit == 1 || itr == buc.entries.end()) && found == false) {
-            remus::rdma_ptr<uint64_t> cntptr (direntryptr.raw() + offsetof(DirEntry, slist_cnt)); 
+            remus::rdma_ptr<uint64_t> cntptr (dataptr.raw() + offsetof(DataEntry, slist_cnt)); 
             uint64_t slot = ct->FetchAndAdd(cntptr, 1);     // update slist_cnt
             // if (slot < 2) { -- 
-                remus::rdma_ptr<uint64_t> slistptr (direntryptr.raw() + offsetof(DirEntry, slist) + slot*sizeof(uint64_t)); 
+                remus::rdma_ptr<uint64_t> slistptr (dataptr.raw() + offsetof(DataEntry, slist) + slot*sizeof(uint64_t)); 
                 ct->Write(slistptr, thisID);
-        }
-
-        // read the new data entry 
-        DataEntry data = ct->Read(dataptr);  
+        } 
 
         // release lock 
         release(lockptr, ct);
@@ -217,26 +213,25 @@ void write(uint64_t key, uint64_t val, CT &ct) {
 
     // if cached -- use cached data ptr (never modified) 
     
-    // if (itr != buc.entries.end()) {
-    //     dataptr = itr->second.ptr; 
-    // } else {
-    // // not cached -- rdma read to DirEntry 
-    //     DirEntry entry = ct->Read(direntryptr); 
-    //     dataptr = entry.ptr; 
-    // }
+    if (itr != buc.entries.end()) {
+        dataptr = itr->second.ptr; 
+    } else {
+    // not cached -- rdma read to DirEntry 
+        DirEntry entry = ct->Read(direntryptr); 
+        dataptr = entry.ptr; 
+    }
 
-    // read direntry to get (updated) slist
-    DirEntry entry = ct->Read(direntryptr); 
-    dataptr = entry.ptr; 
-    uint64_t cnt = entry.slist_cnt; 
-    
     // release lock on cache
-    xlock.unlock();  
+    xlock.unlock(); 
+
+    // read DataE for slist 
+    DataEntry data = ct->Read(dataptr); 
+    uint64_t cnt = data.slist_cnt; 
 
     // invalidate each sharing node's inval bit for this key 
-    remus::rdma_ptr<uint64_t> cntptr (direntryptr.raw() + offsetof(DirEntry, slist_cnt));
+    remus::rdma_ptr<uint64_t> cntptr (dataptr.raw() + offsetof(DataEntry, slist_cnt));
     for (uint64_t i = 0; i < cnt; i++) {
-        uint64_t s_node = entry.slist[i]; 
+        uint64_t s_node = data.slist[i]; 
         // if (s_node == thisID) continue; 
 
         auto itr = invmap.find(s_node); 

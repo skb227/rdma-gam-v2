@@ -97,7 +97,7 @@ int main (int argc, char **argv) {
                 // make a new dir entry object, set its key to i 
                 DirEntry d{}; 
                 d.key = i; 
-                d.slist_cnt = 0; 
+                // d.slist_cnt = 0; 
 
                 // let remus do pointer arith 
                 ct->Write(dirptr+i, d);
@@ -143,6 +143,7 @@ int main (int argc, char **argv) {
                 // write the value 
                 DataEntry d{}; 
                 d.value = (i + 1) * 10; 
+                d.slist_cnt = 0; 
                 // d.version = 0; 
                 ct->Write(dataptr, d); 
                 
