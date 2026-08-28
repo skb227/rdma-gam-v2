@@ -28,9 +28,9 @@ class GAMcache {
     std::unordered_map<uint64_t, remus::rdma_ptr<InvTable>> invmap; 
 
     // acquire lock on data entry 
-    remus::rdma_ptr<uint64_t> acquire(remus::rdma_ptr<DirEntry> direntry, CT &ct) {      //, std::atomic<uint64_t> &cas_fails) {
+    remus::rdma_ptr<uint64_t> acquire(remus::rdma_ptr<DataEntry> dataentry, CT &ct) {      //, std::atomic<uint64_t> &cas_fails) {
         // build lock ptr 
-        remus::rdma_ptr<uint64_t> lockptr(direntry.raw() + offsetof(DirEntry, lock)); 
+        remus::rdma_ptr<uint64_t> lockptr(dataentry.raw() + offsetof(DataEntry, lock)); 
         while (true) {  // loop to keep trying (spin lock) 
             //if (lockptr.compare_exchange_weak(0, 1, ct)) {        // ~ equivalent to tas
             
@@ -125,9 +125,6 @@ public:
 
         // get xlock on bucket to add new entry 
         std::unique_lock<std::shared_mutex> xlock(buc.mtxlock);
-        
-        // lock the DirEntry
-        auto lockptr = acquire(direntryptr, ct); 
 
         // check if cached but invalid -- take the data entry addr 
         remus::rdma_ptr<DataEntry> dataptr; 
@@ -140,6 +137,9 @@ public:
             DirEntry entry = ct->Read(direntryptr); 
             dataptr = entry.ptr; 
         }
+
+        // lock the DataEntry
+        auto lockptr = acquire(dataptr, ct); 
 
         // read the new data entry 
         DataEntry data = ct->Read(dataptr); 
@@ -204,9 +204,6 @@ void write(uint64_t key, uint64_t val, CT &ct) {
 
     // get the ptr to entries[key] DirEntry
     remus::rdma_ptr<DirEntry> direntryptr = dirptr + key;
-    
-    // lock DirEntry 
-    auto lockptr = acquire(direntryptr, ct); 
 
     // holder for DataEntry ptr 
     remus::rdma_ptr<DataEntry> dataptr; 
@@ -220,6 +217,9 @@ void write(uint64_t key, uint64_t val, CT &ct) {
         DirEntry entry = ct->Read(direntryptr); 
         dataptr = entry.ptr; 
     }
+
+    // lock DirEntry 
+    auto lockptr = acquire(dataptr, ct); 
 
     // release lock on cache
     xlock.unlock(); 
@@ -242,14 +242,22 @@ void write(uint64_t key, uint64_t val, CT &ct) {
         ct->Write(remote_bitptr, (uint64_t)1); 
     }
 
+    DataEntry d{}; 
+
+    d.slist_cnt = 0; 
+    d.value = val; 
+    // d.lock.store(ct, 0);  -- should be handled during initalization
+
+    ct->Write(dataptr, d); 
+
     // and then clear the slist cnt
-    ct->Write(cntptr, (uint64_t)0); 
+    // ct->Write(cntptr, (uint64_t)0); 
 
     // rdma addr for value 
-    remus::rdma_ptr<uint64_t> valptr(dataptr.raw() + offsetof(DataEntry, value)); 
+    // remus::rdma_ptr<uint64_t> valptr(dataptr.raw() + offsetof(DataEntry, value)); 
 
     // write new value
-    ct->Write(valptr, val); 
+    // ct->Write(valptr, val); 
 
     // invalidate caches on nodes that have previously read (cached) the key 
 
