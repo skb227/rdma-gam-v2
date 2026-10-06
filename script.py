@@ -20,8 +20,13 @@ for threads in thread_counts:
     # (Adjust this string to match exactly what Remus needs in cl.experiment)
     experiment_config = f"""
 exefile=build/experiment/run
-experiment_args="--seg-size 25 --segs-per-mn 20 --first-cn-id 1 --last-cn-id 1 --first-mn-id 0 --last-mn-id 1 --qp-lanes 4 --qp-sched-pol RR --mn-port 33330 --cn-threads {threads} --cn-ops-per-thread 4 --cn-thread-bufsz 20 --alloc-pol GLOBAL-RR"
+experiment_args="--seg-size 29 --segs-per-mn 1 --first-cn-id 1 --last-cn-id 1 --first-mn-id 0 --last-mn-id 1 --qp-lanes 4 --qp-sched-pol RR --mn-port 33330 --cn-threads {threads} --cn-ops-per-thread 4 --cn-thread-bufsz 20 --alloc-pol GLOBAL-RR"
 """
+#     experiment_config = f"""
+# exefile=build/experiment/run
+# experiment_args="--seg-size 29 --segs-per-mn 1 --first-cn-id 1 --last-cn-id 2 --first-mn-id 0 --last-mn-id 2 --qp-lanes 4 --qp-sched-pol RR --mn-port 33330 --cn-threads {threads} --cn-ops-per-thread 4 --cn-thread-bufsz 20 --alloc-pol GLOBAL-RR"
+# """
+
     with open("cl.experiment", "w") as f:
         f.write(experiment_config)
 
@@ -32,16 +37,34 @@ experiment_args="--seg-size 25 --segs-per-mn 20 --first-cn-id 1 --last-cn-id 1 -
 
     # 4. Fetch the result file from the remote node!
     cn0_user = "skb227"
-    cn0_ip = "apt185.apt.emulab.net"
-    file_path = "/users/skb227/node1.txt" 
+    cn0_ip = "apt125.apt.emulab.net"
+    # cn1_ip = "apt178.apt.emulab.net"
+    # cn0_ip = "hp188.utah.cloudlab.us"
+    # cn1_ip = "hp012.utah.cloudlab.us"
+    # cn2_ip = "hp004.utah.cloudlab.us"
+    file_path = "/users/skb227/node1.txt"
+    # file_path1 = "/users/skb227/node2.txt"
+    # file_path2 = "/users/skb227/node3.txt"
 
     fetch_cmd = ["ssh", f"{cn0_user}@{cn0_ip}", f"cat {file_path}"]
     fetch_process = subprocess.run(fetch_cmd, capture_output=True, text=True)
     
     output = fetch_process.stdout
+
+    # fetch_cmd1 = ["ssh", f"{cn0_user}@{cn1_ip}", f"cat {file_path1}"]
+    # fetch_process1 = subprocess.run(fetch_cmd1, capture_output=True, text=True)
+    
+    # output1 = fetch_process1.stdout
+
+    # fetch_cmd2 = ["ssh", f"{cn0_user}@{cn2_ip}", f"cat {file_path2}"]
+    # fetch_process2 = subprocess.run(fetch_cmd2, capture_output=True, text=True)
+
+    # output2 = fetch_process2.stdout
     
     # 5. Parse the output just like before
     match = re.search(r'DUR_US:(\d+)', output)
+    # match1 = re.search(r'DUR_US:(\d+)', output1)
+    # match2 = re.search(r'DUR_US:(\d+)', output2)
     
     if match:
         duration_us = int(match.group(1))
@@ -61,5 +84,45 @@ experiment_args="--seg-size 25 --segs-per-mn 20 --first-cn-id 1 --last-cn-id 1 -
     else:
         print(f"Failed to find 'DUR_US:' in the output for {threads} threads.")
         print("Raw Output:\n", output)
+
+    # if match1:
+    #     duration_us = int(match1.group(1))
+        
+    #     # Calculate throughput (assuming 20,000 ops per thread)
+    #     total_ops = threads * 20000 
+    #     duration_sec = duration_us / 1_000_000.0
+    #     throughput = total_ops / duration_sec if duration_sec > 0 else 0
+        
+    #     print(f"Success! Threads: {threads} | Throughput: {throughput:.2f} ops/sec")
+        
+    #     # 6. Save the results to the CSV file
+    #     with open(csv_filename, 'a', newline='') as f:
+    #         writer = csv.writer(f)
+    #         writer.writerow([threads, duration_us, throughput])
+            
+    # else:
+    #     print(f"Failed to find 'DUR_US:' in the output for {threads} threads.")
+    #     print("Raw Output:\n", output)
+    
+    
+    # if match2:
+    #     duration_us = int(match2.group(1))
+        
+    #     # Calculate throughput (assuming 20,000 ops per thread)
+    #     total_ops = threads * 20000 
+    #     duration_sec = duration_us / 1_000_000.0
+    #     throughput = total_ops / duration_sec if duration_sec > 0 else 0
+        
+    #     print(f"Success! Threads: {threads} | Throughput: {throughput:.2f} ops/sec")
+        
+    #     # 6. Save the results to the CSV file
+    #     with open(csv_filename, 'a', newline='') as f:
+    #         writer = csv.writer(f)
+    #         writer.writerow([threads, duration_us, throughput])
+            
+    # else:
+    #     print(f"Failed to find 'DUR_US:' in the output for {threads} threads.")
+    #     print("Raw Output:\n", output)
+
 
 print("All experiments finished!")

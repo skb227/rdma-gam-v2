@@ -35,14 +35,13 @@ class GAMcache {
             //if (lockptr.compare_exchange_weak(0, 1, ct)) {        // ~ equivalent to tas
             
             if (ct->CompareAndSwap(lockptr, (uint64_t)0, (uint64_t)1)) {
-                // cas_fails++; 
                 break; 
             }
 
             // to always make cas true: 
             // break;
             // to use write instead of cas: 
-            //ct->Write(lockptr, (uint64_t)0); 
+            // ct->Write(lockptr, (uint64_t)0); 
             // break;
         } 
         return lockptr; 
