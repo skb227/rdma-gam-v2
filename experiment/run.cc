@@ -215,17 +215,34 @@ int main (int argc, char **argv) {
                     // set up random number generator 
                     std::uniform_int_distribution<> dist(0, (ENTRIES)-1); 
                     std::uniform_int_distribution<> dist2(0, 1);
-                    std::mt19937 gen(std::random_device{}());
+                    thread_local std::mt19937 gen(std::random_device{}());
 
-                    // get starting time before thread does any work 
-                    ct->arrive_control_barrier(total_threads);
-                    std::chrono::high_resolution_clock::time_point start_thr = std::chrono::high_resolution_clock::now(); 
+                    // running four times, discarding first run for cache warmpup (to simulate gam benchmarking)
+                    for (int z = 0; z < 4; z++) {
+
+                        // get starting time before thread does any work 
+                        ct->arrive_control_barrier(total_threads);
+                        std::chrono::high_resolution_clock::time_point start_thr = std::chrono::high_resolution_clock::now(); 
 
                     // std::chrono::microseconds read_time = {};
                     // std::chrono::microseconds write_time = {}; 
 
                     // each thread workload -- change for distribution
-                    for (uint64_t k = 0; k < OPS/2; k++) {
+                        uint64_t num_reads = 0; 
+                        uint64_t num_writes = 0; 
+                        for (uint64_t k = 0; k < OPS; k++) {
+                            if (READS != 0 && num_reads < (READS*OPS) && ((dist2(gen) == 0) || num_writes >= ((1-READS)*OPS))) {
+                                cache->read(((dist(gen) % 8) * (id + 1)), ct); 
+                                num_reads++; 
+                                // file << "check: read" << std::endl; 
+                            } else if (READS != 1.0) {
+                                cache->write(((dist(gen) % 8) * (id +1)), dist(gen)*10, ct); 
+                                num_writes++; 
+                                // file << "check: write" << std::endl; 
+                            }
+                        } 
+                    /*
+                    for (uint64_t k = 0; k < OPS; k++) {
                         // read 
                             // std::chrono::high_resolution_clock::time_point start = std::chrono::high_resolution_clock::now(); 
                             // cache->read(dist(gen), ct);
@@ -246,7 +263,7 @@ int main (int argc, char **argv) {
                             // end = std::chrono::high_resolution_clock::now(); 
                             // time = std::chrono::duration_cast<std::chrono::microseconds>(end - start); 
                             // write_time = write_time + time; 
-
+                            
                             cache->write(dist(gen), dist(gen)*10, ct);
 
                             // uint64_t writeid = dist(gen); 
@@ -254,17 +271,22 @@ int main (int argc, char **argv) {
                             // cache->write(writeid, val2, ct);  
                             // file << "write, key " << writeid << ", val " << val2 << std::endl; 
                     }
+                    */
 
                     // get ending time
-                    auto end_thread = std::chrono::high_resolution_clock::now(); 
-                    auto dur = std::chrono::duration_cast<std::chrono::microseconds>(end_thread - start_thr).count(); 
+                        auto end_thread = std::chrono::high_resolution_clock::now(); 
+                        auto dur = std::chrono::duration_cast<std::chrono::microseconds>(end_thread - start_thr).count(); 
 
-                    // write to file rather than stdout (for script) 
-                    std::string filename = "node" + std::to_string(id) + ".txt";
-                    std::ofstream res_file(filename); 
-                    res_file << "DUR_US:" << dur << std::endl; 
-                    std::cout << dur << std::endl; 
-                    res_file.close(); 
+                        // write to file rather than stdout (for script) 
+                        // std::string filename = "node" + std::to_string(id) + ".txt";
+                        // std::ofstream res_file(filename); 
+                        // res_file << "DUR_US:" << dur << std::endl; 
+                        std::cout << dur << std::endl; 
+                        // res_file.close(); 
+
+                        ct->arrive_control_barrier(total_threads);
+                        std::cout << std::endl; 
+                }
 
                     // std::cout << "reads: " << (read_time.count())/10000 << std::endl; 
                     // std::cout << "writes: " << (write_time.count())/10000 << std::endl; 

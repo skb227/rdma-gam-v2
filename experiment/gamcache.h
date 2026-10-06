@@ -43,6 +43,7 @@ class GAMcache {
             // to use write instead of cas: 
             // ct->Write(lockptr, (uint64_t)0); 
             // break;
+            // std::this_thread::yield(); 
         } 
         return lockptr; 
     }
@@ -107,9 +108,12 @@ public:
         // check if cached but invalid -- take the data entry addr 
         remus::rdma_ptr<DataEntry> dataptr; 
 
+        // new iterator for new 
+        auto itr2 = buc.entries.find(key); 
+
         // if cached -- use cached data ptr (never modified) 
-        if (itr != buc.entries.end()) {
-            dataptr = itr->second.ptr; 
+        if (itr2 != buc.entries.end()) {
+            dataptr = itr2->second.ptr; 
         } else {
         // no cached -- rdma read to DirEntry 
             DirEntry entry = ct->Read(direntryptr); 
@@ -132,11 +136,13 @@ public:
         }
 
         // need to update slist of DirEntry (if was invalidated or never cached before)
-        if ((invalbit == 1 || itr == buc.entries.end()) && found == false) {
+        if ((invalbit == 1 || itr2 == buc.entries.end()) && found == false) {
             // update the slist_cnt and slist, then write it to dataptr at once 
-            data.slist_cnt = data.slist_cnt + 1; 
-            data.slist[data.slist_cnt] = thisID; 
-            ct->Write(dataptr, data); 
+            if (data.slist_cnt < NUM_NODES) {
+                data.slist[data.slist_cnt] = thisID; 
+                data.slist_cnt = data.slist_cnt + 1; 
+                ct->Write(dataptr, data);
+            }
         } 
 
         // release lock 
@@ -173,10 +179,10 @@ void write(uint64_t key, uint64_t val, CT &ct) {
     auto itr = buc.entries.find(key);
     if (itr != buc.entries.end()) {
         // if cached, invalidate        -- IOW
-        // itr->second.flag = INVALID; 
+        itr->second.flag = INVALID; 
 
         // if cached, update cache      -- UOW
-        itr->second.data[0] = val;
+        // itr->second.data[0] = val;
     }
 
     // get the ptr to entries[key] DirEntry
@@ -206,16 +212,15 @@ void write(uint64_t key, uint64_t val, CT &ct) {
     uint64_t cnt = data.slist_cnt; 
 
     // invalidate each sharing node's inval bit for this key 
-    remus::rdma_ptr<uint64_t> cntptr (dataptr.raw() + offsetof(DataEntry, slist_cnt));
     for (uint64_t i = 0; i < cnt; i++) {
         uint64_t s_node = data.slist[i]; 
-        // if (s_node == thisID) continue; 
+        // if (s_node == thisID) continue;                              // uncomment for update on write !! 
 
         auto itr = invmap.find(s_node); 
         if (itr == invmap.end()) continue; 
 
         // else write inv bit to 1 
-        remus::rdma_ptr<uint64_t> remote_bitptr (itr->second.raw() + offsetof(InvTable, invbits) + key * sizeof(remus::Atomic<uint64_t>)); 
+        remus::rdma_ptr<uint64_t> remote_bitptr (itr->second.raw() + offsetof(InvTable, invbits) + key * sizeof(uint64_t)); 
         ct->Write(remote_bitptr, (uint64_t)1); 
     }
 

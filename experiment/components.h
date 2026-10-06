@@ -12,10 +12,11 @@ using CT = std::shared_ptr<remus::ComputeThread>;
 
 // constants
 static constexpr uint64_t ENTRIES = 1024;
-static constexpr uint64_t OPS = 20000;
-// static constexpr uint64_t READS = 100;
+static constexpr uint64_t OPS = 100000;
+static constexpr double READS = 0.5; 
 static constexpr uint64_t CACHE_SIZE = ENTRIES;
 // static constexpr uint64_t NUM_QUEUES = 4; 
+static constexpr uint64_t NUM_NODES = 8; 
 
 // possible states 
 enum State {
@@ -30,8 +31,9 @@ struct DataEntry {
     remus::Atomic<uint64_t> lock;           // lock on data entry 
     uint64_t value;                         // data value 
     uint64_t slist_cnt;                     // # of nodes in slist 
-    uint64_t slist[2];                      // nodes that have cached this entry key (as of now, max 2 nodes sharing) 
-    uint64_t padding[3];                    // 8 bytes for each field, 16 for 2 uint64_t, 24 (3*8) padding to make 64 bytes total
+    uint64_t slist[NUM_NODES];                      // nodes that have cached this entry key (as of now, max 8 nodes sharing) 
+    uint64_t padding[5];                    // 8 bytes for each field, 64 for 8 uint64_t, 40 (5*8) padding to make 128 bytes total
+    // or should i make this 512 bytes also? 
 
     void init (CT &ct) {
         lock.store(0, ct); 
@@ -57,19 +59,21 @@ struct DirEntry {
     */
 };
 
+/*
 // directory -- array of DirEntry instances, allocated on (arbitrarily) on MN0 
 struct Directory {
     // DirEntry entries[ENTRIES]; 
     std::vector<DirEntry> entries{ENTRIES};
 };
+*/
 
 // cache line entry (exist on remote nodes) 
 struct CacheLine {
     State flag;                         // state of the cache line
-    uint64_t data[64];                  // cached data 
+    uint64_t data[48];                  // cached data 
     remus::rdma_ptr<DataEntry> ptr;     // physical addr of data 
-    // uint64_t version;                   // cached versioning number 
-    uint64_t padding[5];                  // i think enum is 4 bytes, other two are 8 bytes each, so 5*8 = 40 = 60 total
+    // uint64_t version;                // cached versioning number 
+    uint64_t padding[14];               // enum is 4 bytes plus c++ padding, ptr is 8 bytes, data is 8*48=384, so 14*8 = 112 = 512 total
 };
 
 // bucket for cache hash table 
