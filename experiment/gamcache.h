@@ -34,8 +34,8 @@ class GAMcache {
         while (true) {  // loop to keep trying (spin lock) 
             //if (lockptr.compare_exchange_weak(0, 1, ct)) {        // ~ equivalent to tas
             
-            if (ct->CompareAndSwap(lockptr, (uint64_t)0, (uint64_t)1)) {
-                break; 
+            if (ct->CompareAndSwap(lockptr, (uint64_t)0, (uint64_t)1)) { 
+                break;
             }
 
             // to always make cas true: 
@@ -78,7 +78,7 @@ public:
         // first check if key is cached 
 
         // get shared lock on bucket 
-        std::shared_lock<std::shared_mutex> slock(buc.mtxlock);
+        std::shared_lock<std::shared_mutex> slock(buc.weakl);
 
         // check if entry exists in bucket
         auto itr = buc.entries.find(key);
@@ -90,8 +90,9 @@ public:
                 uint64_t invbit = ct->CompareAndSwap(invbitptr, (uint64_t)1, (uint64_t)0);
 
                 if (invbit == 0) {
+                    uint64_t v = itr->second.data[0];
                     slock.unlock(); 
-                    return itr->second.data[0]; 
+                    return v; 
                 }
             }
         }
@@ -102,8 +103,12 @@ public:
         // unlock cache bucket
         slock.unlock(); 
 
+        // get single mutex 
+        buc.strongl.lock(); 
+
+
         // get xlock on bucket to add new entry 
-        std::unique_lock<std::shared_mutex> xlock(buc.mtxlock);
+        // std::unique_lock<std::shared_mutex> xlock(buc.mtxlock);
 
         // check if cached but invalid -- take the data entry addr 
         remus::rdma_ptr<DataEntry> dataptr; 
@@ -114,6 +119,7 @@ public:
         // if cached -- use cached data ptr (never modified) 
         if (itr2 != buc.entries.end()) {
             dataptr = itr2->second.ptr; 
+            // re check here? 
         } else {
         // no cached -- rdma read to DirEntry 
             DirEntry entry = ct->Read(direntryptr); 
@@ -155,11 +161,17 @@ public:
         // cline.ptr = entry.ptr; 
         cline.ptr = dataptr; 
 
+        // xlock cache
+        std::unique_lock<std::shared_mutex> xlock(buc.weakl);
+
         // add to bucket 
         buc.entries[key] = cline; 
 
         // release xlock 
         xlock.unlock(); 
+
+        // unlock 
+        buc.strongl.unlock(); 
 
         // return the data
         return data.value; 
@@ -172,8 +184,11 @@ void write(uint64_t key, uint64_t val, CT &ct) {
     // get cache bucket 
     Bucket &buc = getbucket(key);
 
+    // acquire strong lock 
+    buc.strongl.lock(); 
+
     // get xlock on cache
-    std::unique_lock<std::shared_mutex> xlock(buc.mtxlock);
+    std::unique_lock<std::shared_mutex> xlock(buc.weakl);
 
     // check if key is in cache
     auto itr = buc.entries.find(key);
@@ -201,11 +216,14 @@ void write(uint64_t key, uint64_t val, CT &ct) {
         dataptr = entry.ptr; 
     }
 
+    // release xlock
+    xlock.unlock();
+
     // lock DataE 
     auto lockptr = acquire(dataptr, ct); 
 
     // release lock on cache
-    xlock.unlock(); 
+    // xlock.unlock(); 
 
     // read DataE for slist 
     DataEntry data = ct->Read(dataptr); 
@@ -214,7 +232,7 @@ void write(uint64_t key, uint64_t val, CT &ct) {
     // invalidate each sharing node's inval bit for this key 
     for (uint64_t i = 0; i < cnt; i++) {
         uint64_t s_node = data.slist[i]; 
-        // if (s_node == thisID) continue;                              // uncomment for update on write !! 
+        if (s_node == thisID) continue;
 
         auto itr = invmap.find(s_node); 
         if (itr == invmap.end()) continue; 
@@ -241,8 +259,60 @@ void write(uint64_t key, uint64_t val, CT &ct) {
     // invalidate caches on nodes that have previously read (cached) the key 
 
     // release lock 
-    release(lockptr, ct);       
+    release(lockptr, ct);  
     
+    // release strong lock 
+    buc.strongl.unlock(); 
+    
+}
+
+
+// helper for remote microbenchmark to invalidate on a one node, one thread configuration 
+void invalidate(uint64_t key, CT &ct) {
+    // get cache bucket 
+    Bucket &buc = getbucket(key);
+
+    // check if key is in cache
+    auto itr = buc.entries.find(key);
+    if (itr != buc.entries.end()) {
+        itr->second.flag = INVALID; 
     }
+
+    // get the ptr to entries[key] DirEntry
+    remus::rdma_ptr<DirEntry> direntryptr = dirptr + key;
+
+    // holder for DataEntry ptr 
+    remus::rdma_ptr<DataEntry> dataptr; 
+
+    // if cached -- use cached data ptr (never modified) 
+    if (itr != buc.entries.end()) {
+        dataptr = itr->second.ptr; 
+    } else {
+    // not cached -- rdma read to DirEntry 
+        DirEntry entry = ct->Read(direntryptr); 
+        dataptr = entry.ptr; 
+    }
+
+    // read DataE for slist 
+    DataEntry data = ct->Read(dataptr); 
+    uint64_t cnt = data.slist_cnt; 
+
+    // invalidate each sharing node's inval bit for this key 
+    for (uint64_t i = 0; i < cnt; i++) {
+        uint64_t s_node = data.slist[i]; 
+        // if (s_node == thisID) continue;                              // uncomment for update on write !! 
+
+        auto itr = invmap.find(s_node); 
+        if (itr == invmap.end()) continue; 
+
+        // else write inv bit to 1 
+        remus::rdma_ptr<uint64_t> remote_bitptr (itr->second.raw() + offsetof(InvTable, invbits) + key * sizeof(uint64_t)); 
+        ct->Write(remote_bitptr, (uint64_t)1); 
+    }
+
+    // update slist_cnt and value of DataE, write it back at once 
+    data.slist_cnt = 0; 
+    ct->Write(dataptr, data);
+}
 
 };
