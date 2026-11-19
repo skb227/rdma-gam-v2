@@ -8,6 +8,7 @@
 #include "cloudlab.h"
 #include "params.h"
 #include "gamcache.h"
+#include "workload.cc"
 
 int main (int argc, char **argv) {
 
@@ -210,7 +211,12 @@ int main (int argc, char **argv) {
 
                     // to make parallel across all nodes 
                     // uint64_t tmp = ENTRIES / total_threads;
-                    // std::uniform_int_distribution<> dist(tmp*i*(id-c0+1),(tmp*i+tmp-1)*(id-c0+1));
+                    // uint64_t tmpG = ENTRIES / (cn-c0+1);
+                    // std::uniform_int_distribution<> dist(tmp*i + (id-c0)*tmpG, tmp*i + (id-c0)*tmpG + (tmp-1));
+
+                    // to make parallel across nodes but threads within nodes not parallel 
+                    // uint64_t tmp = ENTRIES / (cn-c0+1);
+                    // std::uniform_int_distribution<> dist(tmp*(id-c0), tmp*(id-c0) + tmp-1);
 
                     // set up random number generator 
                     std::uniform_int_distribution<> dist(0, (ENTRIES)-1); 
@@ -222,71 +228,17 @@ int main (int argc, char **argv) {
 
                         // get starting time before thread does any work 
                         ct->arrive_control_barrier(total_threads);
-                        std::chrono::high_resolution_clock::time_point start_thr = std::chrono::high_resolution_clock::now(); 
 
-                    // std::chrono::microseconds read_time = {};
-                    // std::chrono::microseconds write_time = {}; 
-
-                    // each thread workload -- change for distribution
-                        uint64_t num_reads = 0; 
-                        uint64_t num_writes = 0; 
-                        for (uint64_t k = 0; k < OPS; k++) {
-                            if (READS != 0 && num_reads < (READS*OPS) && ((dist2(gen) == 0) || num_writes >= ((1-READS)*OPS))) {
-                                cache->read(((dist(gen) % 8) * (id + 1)), ct); 
-                                num_reads++; 
-                                // file << "check: read" << std::endl; 
-                            } else if (READS != 1.0) {
-                                cache->write(((dist(gen) % 8) * (id +1)), dist(gen)*10, ct); 
-                                num_writes++; 
-                                // file << "check: write" << std::endl; 
-                            }
-                        } 
-                    /*
-                    for (uint64_t k = 0; k < OPS; k++) {
-                        // read 
-                            // std::chrono::high_resolution_clock::time_point start = std::chrono::high_resolution_clock::now(); 
-                            // cache->read(dist(gen), ct);
-                            // std::chrono::high_resolution_clock::time_point end = std::chrono::high_resolution_clock::now(); 
-                            // auto time = std::chrono::duration_cast<std::chrono::microseconds>(end - start); 
-                            // read_time = read_time + time; 
-
-                            cache->read(dist(gen), ct);
-                            
-                            // uint64_t readid = dist(gen); 
-                            // uint64_t val = cache->read(readid, ct); 
-                            // file << "read key " << readid << ", val " << val << std::endl; 
-
-                        // write 
-                            // start = std::chrono::high_resolution_clock::now(); 
-                            // cache->write(dist(gen), dist(gen)*10, ct); 
-                            // cache->write(dist(gen), dist(gen)*10, ct, m); 
-                            // end = std::chrono::high_resolution_clock::now(); 
-                            // time = std::chrono::duration_cast<std::chrono::microseconds>(end - start); 
-                            // write_time = write_time + time; 
-                            
-                            cache->write(dist(gen), dist(gen)*10, ct);
-
-                            // uint64_t writeid = dist(gen); 
-                            // uint64_t val2 = dist(gen)*10;
-                            // cache->write(writeid, val2, ct);  
-                            // file << "write, key " << writeid << ", val " << val2 << std::endl; 
-                    }
-                    */
-
-                    // get ending time
-                        auto end_thread = std::chrono::high_resolution_clock::now(); 
-                        auto dur = std::chrono::duration_cast<std::chrono::microseconds>(end_thread - start_thr).count(); 
-
-                        // write to file rather than stdout (for script) 
-                        // std::string filename = "node" + std::to_string(id) + ".txt";
-                        // std::ofstream res_file(filename); 
-                        // res_file << "DUR_US:" << dur << std::endl; 
-                        std::cout << dur << std::endl; 
-                        // res_file.close(); 
+                        // call workload 
+                        // workload(ct, id, cache, dist, dist2, gen);
+                        // workload_latency(ct, id, cache, dist, dist2, gen); 
+                        // microbenchmark1(ct, id, cache, dist, dist2, gen);
+                        // microbenchmark2(ct, id, cache, dist, dist2, gen);
+                        
 
                         ct->arrive_control_barrier(total_threads);
                         std::cout << std::endl; 
-                }
+                    }
 
                     // std::cout << "reads: " << (read_time.count())/10000 << std::endl; 
                     // std::cout << "writes: " << (write_time.count())/10000 << std::endl; 
