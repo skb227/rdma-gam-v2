@@ -79,7 +79,8 @@ struct CacheLine {
 // bucket for cache hash table 
 struct Bucket {
     std::unordered_map<uint64_t, CacheLine> entries; 
-    std::shared_mutex mtxlock;          // bucket-grain lock 
+    std::shared_mutex weakl;          // bucket-grain lock 
+    std::mutex strongl;               // for writing/updating
 };
 
 // invalidation table 
